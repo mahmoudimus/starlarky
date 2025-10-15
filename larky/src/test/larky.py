@@ -8,23 +8,31 @@ This technically would allow code that is not valid Larky/Starlark, but that is
 covered by the other tests that exercise this within Larky.
 
 """
-import os
+
 import base64
 import dataclasses
 import hashlib
 import json
-from importlib.util import spec_from_loader, module_from_spec
+import os
+from abc import ABC
 from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+
+WHILE_LOOP_EMULATION_ITERATION = 16384
+
+REPLACEMENTS = [
+    # TODO: add more replacements here
+    ["@vgs//vault", "vault"],
+]
 
 
 # helper to create class with attribute on the fly
-def create_cls(cls_name, attr_dict, bases=(ABC,)):              # noqa: D103
+def create_cls(cls_name, attr_dict, bases=(ABC,)):  # noqa: D103
     for name, attr in attr_dict.items():
         attr.__set_name__(None, name)
-    ns = {'__module__': __name__}
+    ns = {"__module__": __name__}
     ns.update(attr_dict)
     return type(str(cls_name), bases, ns)
-
 
 
 # Shared Starlark/Python files must have a .bzl suffix for Starlark import, so
@@ -48,7 +56,7 @@ def load_module(name, path):
 
 def preprocess_input_text(text):
     result = text
-    for replacement in replacements:
+    for replacement in REPLACEMENTS:
         result = result.replace(replacement[0], replacement[1])
     return result
 
@@ -58,12 +66,12 @@ bazel_workspace_dir = "."
 
 
 def load(filename, *args):
-    if filename.startswith('@'):
+    if filename.startswith("@"):
         return
-    elif filename.startswith(':'):
+    elif filename.startswith(":"):
         filename = os.path.join(bazel_package_dir, filename[1:])
-    elif filename.startswith('//'):
-        split = filename[2:].split(':')
+    elif filename.startswith("//"):
+        split = filename[2:].split(":")
         filename = os.path.join(bazel_workspace_dir, split[0], split[1])
 
     src_file_content = open(filename).read()
@@ -100,6 +108,67 @@ def fail(msg, attr=None):
     raise Fail(msg)
 
 
+class WhileTrueIterator:
+    """Iterator that emulates a while-true loop with a configurable limit."""
+
+    def __init__(self, max_iterations, error_message):
+        self.max_iterations = max_iterations
+        self.error_message = error_message
+        self.current_iteration = 0
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.current_iteration >= self.max_iterations:
+            raise Fail(self.error_message)
+        self.current_iteration += 1
+        return None  # Return None for each iteration, matching Java implementation
+
+
+class WhileTrue:
+    """Container class that creates WhileTrueIterator instances."""
+
+    def __init__(self, bound, limit_exceed_msg):
+        self.bound = bound
+        self.limit_exceed_msg = limit_exceed_msg
+
+    def __iter__(self):
+        return WhileTrueIterator(self.bound, self.limit_exceed_msg)
+
+
+def while_true(error_message="iteration limit exceeded"):
+    """Creates an iterator that emulates a while true loop.
+
+    Args:
+        error_message: The error message to raise when iteration limit is exceeded
+
+    Returns:
+        An iterator that runs until manually broken or limit reached
+
+    Examples:
+        >>> count = 0
+        >>> for _ in while_true("Test error message"):
+        ...     count += 1
+        ...     if count >= 5:
+        ...         break
+        >>> print(f"Successfully iterated {count} times")
+        Successfully iterated 5 times
+
+        >>> count = 0
+        >>> try:
+        ...     for _ in WhileTrue(3, "Max iterations exceeded"):
+        ...         count += 1
+        ...         if count > 5:  # This should exceed the limit
+        ...             break
+        ... except Fail as e:
+        ...     print(f"Expected error caught: {e}")
+        Expected error caught: Max iterations exceeded
+
+    """
+    return WhileTrue(WHILE_LOOP_EMULATION_ITERATION, error_message)
+
+
 class target_utils(object):
     @staticmethod
     def parse_target(target):
@@ -111,10 +180,7 @@ class target_utils(object):
             return (None, None, name)
 
         if repo_base_path.count("//") != 1:
-            fail(
-                'absolute rule name must contain one "//" '
-                f'before ":": "{target}"'
-            )
+            fail('absolute rule name must contain one "//" ' f'before ":": "{target}"')
 
         repo, base_path = repo_base_path.split("//", 1)
 
