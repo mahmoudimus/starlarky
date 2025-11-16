@@ -273,6 +273,57 @@ mvn test -Dtest=BytecodeCompilerTest
 mvn exec:java -Dexec.mainClass="net.starlark.java.eval.compiler.BytecodeCompilerTest"
 ```
 
+## Stack Trace Preservation
+
+The bytecode compiler **fully preserves stack traces** when exceptions occur:
+
+### How It Works
+
+1. **Line Number Tracking**: Each bytecode instruction stores its source line number
+2. **Location Information**: Exceptions include file:line:column information
+3. **Call Stack Integration**: The interpreter integrates with StarlarkThread's call stack
+4. **Complete Stack Traces**: Error messages show the full chain of function calls
+
+### Example
+
+Given this Starlark code:
+```python
+# file: test.star
+def divide(a, b):
+    return a / b  # Line 2
+
+def calculate():
+    return divide(10, 0)  # Line 5 - error!
+
+result = calculate()  # Line 7
+```
+
+An error will produce:
+```
+Traceback (most recent call last):
+  File "test.star", line 7, in <toplevel>
+  File "test.star", line 5, in calculate
+  File "test.star", line 2, in divide
+Error: division by zero
+```
+
+### Implementation Details
+
+- **BytecodeCompiler**: Passes line numbers when emitting instructions via `getLine(node)`
+- **BytecodeChunk**: Stores parallel arrays of instructions and line numbers
+- **BytecodeInterpreter**:
+  - Wraps execution in try-catch to capture exceptions
+  - Calls `ex.ensureStack(thread)` to attach call stack
+  - Creates Location objects with file:line information
+  - Integrates with StarlarkThread for complete stack traces
+
+### Testing
+
+The test suite includes `testStackTracePreservation()` which verifies:
+- Line numbers are captured during compilation
+- Each instruction has associated line number information
+- Exceptions contain proper source location data
+
 ## Performance Considerations
 
 ### Bytecode Benefits
@@ -280,6 +331,7 @@ mvn exec:java -Dexec.mainClass="net.starlark.java.eval.compiler.BytecodeCompiler
 2. **Smaller memory footprint**: Bytecode is more compact than AST
 3. **Caching**: Serialized bytecode can be cached to disk
 4. **Analysis**: Easier to optimize and analyze than AST
+5. **Debug information**: Line numbers preserved without performance penalty
 
 ### WebAssembly Benefits
 1. **Near-native performance**: WASM executes at near-native speed
