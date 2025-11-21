@@ -885,6 +885,45 @@ public final class Starlark {
    */
   public static Object execFileProgram(Program prog, Module module, StarlarkThread thread)
       throws EvalException, InterruptedException {
+    // Use bytecode interpreter if bytecode is available
+    if (prog.hasBytecode()) {
+      // Create mutable copy of globals including predeclared bindings
+      java.util.HashMap<String, Object> globals = new java.util.HashMap<>();
+
+      // Add Starlark universe (built-in functions like int, str, etc.)
+      globals.putAll(Starlark.UNIVERSE);
+
+      // Add module-specific predeclared bindings
+      globals.putAll(module.getPredeclaredBindings());
+
+      // Add current globals
+      globals.putAll(module.getGlobals());
+
+      Object result = BytecodeInterpreter.execute(
+          prog.getBytecode(),
+          thread,
+          globals,
+          prog.getFilename());
+
+      // Write back modified globals to module (skip predeclared/universe)
+      ImmutableMap<String, Object> predeclared = module.getPredeclaredBindings();
+      for (Map.Entry<String, Object> entry : globals.entrySet()) {
+        String name = entry.getKey();
+        Object value = entry.getValue();
+        // Skip universe and predeclared bindings
+        if (!Starlark.UNIVERSE.containsKey(name) && !predeclared.containsKey(name)) {
+          // Only update if the value changed or is new
+          Object oldValue = module.getGlobals().get(name);
+          if (oldValue != value) {
+            module.setGlobal(name, value);
+          }
+        }
+      }
+
+      return result;
+    }
+
+    // Fall back to tree-walking interpreter
     Resolver.Function rfn = prog.getResolvedFunction();
 
     // A given Module may be passed to execFileProgram multiple times in sequence,

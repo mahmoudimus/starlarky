@@ -35,7 +35,9 @@ public final class Program {
 
   private Program(
       Resolver.Function body, ImmutableList<String> loads, ImmutableList<Location> loadLocations) {
-    this(body, loads, loadLocations, true);
+    // Bytecode compilation disabled by default until all features implemented
+    // Set system property -Dstarlark.bytecode=true to enable
+    this(body, loads, loadLocations, Boolean.getBoolean("starlark.bytecode"));
   }
 
   private Program(
