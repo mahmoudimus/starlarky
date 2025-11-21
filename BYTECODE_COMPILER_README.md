@@ -339,6 +339,67 @@ The test suite includes `testStackTracePreservation()` which verifies:
 3. **Sandboxed**: Secure execution environment
 4. **Browser compatibility**: Can run Starlark in web browsers
 
+### JVM Bytecode Benefits
+1. **Native JVM execution**: No interpreter overhead
+2. **JIT compilation**: Hotspot can optimize the generated code
+3. **Full debugging support**: Works with standard Java debuggers
+4. **Interoperability**: Direct integration with Java libraries
+5. **Stack traces**: Full source line mapping via LineNumberTable
+
+## JVM Bytecode Generation
+
+The compiler can also generate native JVM bytecode (.class files):
+
+### Components
+
+- **JvmBytecodeGenerator.java**: Generates .class files from Starlark bytecode
+- **StarlarkRuntime.java**: Runtime support methods called by generated code
+- **CompiledStarlarkLoader.java**: Dynamic class loading and execution
+
+### Usage
+
+```java
+// Compile Starlark to our bytecode
+BytecodeChunk chunk = program.getBytecode();
+
+// Generate JVM class file
+byte[] classBytes = JvmBytecodeGenerator.generate(chunk, "com/example/MyScript");
+
+// Or use the loader for dynamic execution
+CompiledStarlarkLoader.CompiledProgram compiled = CompiledStarlarkLoader.compile(chunk);
+Object result = compiled.execute(thread);
+```
+
+### Generated Class Structure
+
+```java
+// Generated class structure
+public final class MyScript {
+    public MyScript() { }
+
+    public Object execute(StarlarkThread thread) {
+        // Compiled Starlark code
+        // Calls to StarlarkRuntime for operations
+    }
+}
+```
+
+### Stack Trace Example
+
+When an error occurs in JVM-compiled Starlark:
+
+```
+Exception in thread "main" net.starlark.java.eval.EvalException: division by zero
+    at net.starlark.compiled.MyScript_1.execute(myfile.star:5)
+    at net.starlark.java.eval.compiler.CompiledStarlarkLoader.executeClass(CompiledStarlarkLoader.java:89)
+    at MyApp.main(MyApp.java:15)
+```
+
+The stack trace shows:
+- Original Starlark source file name (`myfile.star`)
+- Line number where the error occurred (`:5`)
+- Full Java call stack for context
+
 ## Future Enhancements
 
 ### Optimizations
