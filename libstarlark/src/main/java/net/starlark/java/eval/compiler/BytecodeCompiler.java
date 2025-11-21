@@ -585,7 +585,6 @@ public final class BytecodeCompiler {
   }
 
   public void visit(Comprehension node) {
-    // Comprehensions are complex - simplified implementation
     int lineNum = getLine(node);
 
     // Create empty collection
@@ -595,8 +594,91 @@ public final class BytecodeCompiler {
       builder.emit(Opcode.BUILD_LIST, 0, lineNum);
     }
 
-    // TODO: Implement comprehension logic
-    // This requires handling nested loops and filters
+    // The result collection is now on top of stack
+    // We need to keep it there throughout the comprehension
+    // Compile nested loops and conditionals
+    compileClauses(node, 0);
+  }
+
+  private void compileClauses(Comprehension comp, int clauseIndex) {
+    if (clauseIndex >= comp.getClauses().size()) {
+      // Base case: evaluate body and add to result
+      if (comp.isDict()) {
+        // Dict comprehension: {k: v for ...}
+        DictExpression.Entry body = (DictExpression.Entry) comp.getBody();
+
+        // Compile key and value
+        compileExpression(body.getKey());
+        compileExpression(body.getValue());
+
+        // Stack: [result_dict, key, value]
+        // DICT_ADD pops key and value, adds to dict at stack[-3]
+        builder.emit(Opcode.DICT_ADD, 1, getLine(comp));
+      } else {
+        // List comprehension: [expr for ...]
+        Expression body = (Expression) comp.getBody();
+
+        // Compile body expression
+        compileExpression(body);
+
+        // Stack: [result_list, value]
+        // LIST_APPEND pops value, appends to list at stack[-2]
+        builder.emit(Opcode.LIST_APPEND, 1, getLine(comp));
+      }
+      return;
+    }
+
+    // Recursive case: process current clause
+    Comprehension.Clause clause = comp.getClauses().get(clauseIndex);
+
+    if (clause instanceof Comprehension.For) {
+      Comprehension.For forClause = (Comprehension.For) clause;
+      int lineNum = getLine(forClause);
+
+      // Compile iterable expression
+      compileExpression(forClause.getIterable());
+
+      // Get iterator
+      builder.emit(Opcode.GET_ITER, lineNum);
+
+      // Start of loop
+      String continueLabel = newLabel("comp_for_continue");
+      String breakLabel = newLabel("comp_for_break");
+
+      markLabel(continueLabel);
+
+      // Try to get next value - FOR_ITER jumps to breakLabel when done
+      emitJump(Opcode.FOR_ITER, breakLabel, lineNum);
+
+      // Assign loop variable
+      compileLValue(forClause.getVars());
+
+      // Process remaining clauses (recursively)
+      compileClauses(comp, clauseIndex + 1);
+
+      // Continue loop
+      emitJump(Opcode.JUMP, continueLabel, lineNum);
+
+      // Loop done
+      markLabel(breakLabel);
+      builder.emit(Opcode.POP, lineNum); // Pop iterator
+
+    } else if (clause instanceof Comprehension.If) {
+      Comprehension.If ifClause = (Comprehension.If) clause;
+      int lineNum = getLine(ifClause);
+
+      // Compile condition
+      compileExpression(ifClause.getCondition());
+
+      // If false, skip the body
+      String skipLabel = newLabel("comp_if_skip");
+      emitJump(Opcode.POP_JUMP_IF_FALSE, skipLabel, lineNum);
+
+      // Process remaining clauses
+      compileClauses(comp, clauseIndex + 1);
+
+      markLabel(skipLabel);
+    }
   }
 
   public void visit(LambdaExpression node) {
