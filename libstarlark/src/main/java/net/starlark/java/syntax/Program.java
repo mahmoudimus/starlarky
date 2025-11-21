@@ -51,18 +51,18 @@ public final class Program {
     this.loadLocations = loadLocations;
 
     // Compile to bytecode if enabled
+    BytecodeChunk compiledBytecode = null;
     if (enableBytecode) {
       try {
-        this.bytecode = BytecodeCompiler.compileFunction(body);
+        compiledBytecode = BytecodeCompiler.compileFunction(body);
       } catch (Exception e) {
         // If bytecode compilation fails, fall back to interpreted mode
         // This ensures backward compatibility
         System.err.println("Warning: Bytecode compilation failed: " + e.getMessage());
-        this.bytecode = null;
+        compiledBytecode = null;
       }
-    } else {
-      this.bytecode = null;
     }
+    this.bytecode = compiledBytecode;
   }
 
   // TODO(adonovan): eliminate once Eval no longer needs access to syntax.
