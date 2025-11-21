@@ -623,10 +623,19 @@ public final class BytecodeCompiler {
       int nameIndex = builder.addConstant(dot.getField().getName());
       builder.emit(Opcode.STORE_ATTR, nameIndex, getLine(lhs));
     } else if (lhs instanceof ListExpression) {
-      // Tuple/list unpacking
+      // Tuple/list unpacking: a, b = [1, 2]
+      // The RHS value is already on the stack
       ListExpression list = (ListExpression) lhs;
-      for (Expression elem : list.getElements()) {
-        compileLValue(elem);
+      int count = list.getElements().size();
+
+      // Emit UNPACK_SEQUENCE to unpack the sequence into N values on stack
+      builder.emit(Opcode.UNPACK_SEQUENCE, count, getLine(lhs));
+
+      // Now assign each unpacked value to the corresponding lvalue
+      // UNPACK_SEQUENCE pushes elements in forward order, so rightmost is on top
+      // We assign from right to left (popping from stack)
+      for (int i = count - 1; i >= 0; i--) {
+        compileLValue(list.getElements().get(i));
       }
     } else {
       throw new IllegalArgumentException("Invalid lvalue: " + lhs);

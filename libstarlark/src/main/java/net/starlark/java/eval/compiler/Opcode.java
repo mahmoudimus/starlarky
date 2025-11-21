@@ -81,6 +81,7 @@ public enum Opcode {
   BUILD_TUPLE(1),   // Build tuple (operand: count)
   BUILD_DICT(1),    // Build dict (operand: count of key-value pairs)
   BUILD_SET(1),     // Build set (operand: count)
+  UNPACK_SEQUENCE(1), // Unpack sequence into N values (operand: count)
 
   // Indexing and slicing
   INDEX(0),         // a[b] - indexing operation
