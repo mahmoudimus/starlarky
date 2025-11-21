@@ -569,10 +569,11 @@ public final class BytecodeInterpreter {
         case LIST_APPEND:
           {
             // LIST_APPEND(i) pops value from top of stack and appends it to list at stack[-i]
+            // The offset is relative to stack BEFORE the pop
             int offset = instr.getOperand1();
-            Object value = pop();
             @SuppressWarnings("unchecked")
             StarlarkList<Object> list = (StarlarkList<Object>) stackGet(offset);
+            Object value = pop();
             list.addElement(value);
           }
           break;
@@ -580,11 +581,12 @@ public final class BytecodeInterpreter {
         case DICT_ADD:
           {
             // DICT_ADD(i) pops value and key from stack, adds to dict at stack[-i]
+            // The offset is relative to stack BEFORE the pops
             int offset = instr.getOperand1();
-            Object value = pop();
-            Object key = pop();
             @SuppressWarnings("unchecked")
             Dict<Object, Object> dict = (Dict<Object, Object>) stackGet(offset);
+            Object value = pop();
+            Object key = pop();
             dict.putEntry(key, value);
           }
           break;

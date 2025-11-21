@@ -288,6 +288,20 @@ public final class BytecodeChunk {
       return instructions.size();
     }
 
+    // Update an instruction's first operand (for jump patching)
+    public void updateInstructionOperand(int index, int newOperand) {
+      if (index < 0 || index >= instructions.size()) {
+        throw new IllegalArgumentException("Invalid instruction index: " + index);
+      }
+      Instruction oldInstr = instructions.get(index);
+      // Create new instruction with updated operand
+      Instruction newInstr = Instruction.create(oldInstr.getOpcode(), currentOffset, newOperand);
+      if (oldInstr.getOpcode().getOperandCount() == 2) {
+        newInstr = Instruction.create(oldInstr.getOpcode(), currentOffset, newOperand, oldInstr.getOperand2());
+      }
+      instructions.set(index, newInstr);
+    }
+
     public BytecodeChunk build() {
       constantPool.freeze();
       return new BytecodeChunk(
