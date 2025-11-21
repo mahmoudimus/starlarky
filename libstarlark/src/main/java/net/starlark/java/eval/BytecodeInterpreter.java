@@ -530,8 +530,26 @@ public final class BytecodeInterpreter {
           break;
 
         case MAKE_FUNCTION:
-          // TODO: Implement function creation
-          throw new UnsupportedOperationException("MAKE_FUNCTION not yet implemented");
+          {
+            // Get function descriptor from constant pool
+            FunctionDescriptor descriptor =
+                (FunctionDescriptor) chunk.getConstantPool().getConstant(instr.getOperand1());
+
+            // Create BytecodeFunction from descriptor
+            BytecodeFunction function =
+                new BytecodeFunction(
+                    descriptor.getName(),
+                    descriptor.getLocation(),
+                    descriptor.getChunk(),
+                    descriptor.getParameterNames(),
+                    filename);
+
+            // Set globals so the function can access them when called
+            function.setGlobals(globals);
+
+            push(function);
+          }
+          break;
 
         case LOAD_MODULE:
           // TODO: Implement module loading
