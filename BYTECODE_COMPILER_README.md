@@ -346,6 +346,78 @@ The test suite includes `testStackTracePreservation()` which verifies:
 4. **Interoperability**: Direct integration with Java libraries
 5. **Stack traces**: Full source line mapping via LineNumberTable
 
+## Configurable Backend System
+
+The bytecode compiler supports multiple compilation targets through a pluggable backend system.
+
+### Available Targets (BytecodeTarget)
+
+| Target | File Extension | Description |
+|--------|---------------|-------------|
+| `INTERPRETER` | `.stc` | Default bytecode interpreter execution |
+| `JVM` | `.class` | Native JVM class files |
+| `WASM` | `.wat` | WebAssembly text format |
+
+### Using the Backend API
+
+```java
+// Use specific backend
+BytecodeBackend backend = BytecodeBackend.forTarget(BytecodeTarget.JVM);
+byte[] output = backend.generate(chunk, "com/example/Script", "script.star");
+
+// Check backend capabilities
+if (backend.isTextOutput()) {
+    String text = backend.generateText(chunk, "module_name");
+}
+```
+
+### Multi-Target Compilation
+
+Compile to multiple backends simultaneously:
+
+```java
+MultiTargetCompiler compiler = new MultiTargetCompiler.Builder()
+    .addTarget(BytecodeTarget.JVM)
+    .addTarget(BytecodeTarget.WASM)
+    .setSourceFile("script.star")
+    .setClassName("com/example/Script")
+    .build();
+
+MultiTargetCompiler.CompilationResult result = compiler.compile(source);
+
+// Get outputs for each target
+byte[] jvmBytes = result.getOutput(BytecodeTarget.JVM);
+String watText = result.getTextOutput(BytecodeTarget.WASM);
+```
+
+Or compile to all targets at once:
+
+```java
+MultiTargetCompiler compiler = new MultiTargetCompiler.Builder()
+    .allTargets()  // INTERPRETER, JVM, WASM
+    .build();
+```
+
+### JSR-223 Integration
+
+The script engine supports backend selection:
+
+```java
+LarkyScriptEngine engine = new LarkyScriptEngine();
+
+// Set default target
+engine.setBytecodeTarget(BytecodeTarget.JVM);
+
+// Compile to multiple targets
+MultiTargetCompiler.CompilationResult result = engine.compileToTargets(
+    script, BytecodeTarget.JVM, BytecodeTarget.WASM);
+
+// Or get specific output from compiled script
+LarkyCompiledScript compiled = engine.compile(script);
+byte[] jvmBytes = compiled.getJvmBytecode();
+String wat = compiled.getWasmText();
+```
+
 ## JVM Bytecode Generation
 
 The compiler can also generate native JVM bytecode (.class files):
@@ -436,9 +508,19 @@ libstarlark/src/main/java/net/starlark/java/
 │       ├── BytecodeCompiler.java       # AST → Bytecode
 │       ├── BytecodeInterpreter.java    # Bytecode executor
 │       ├── WasmGenerator.java          # Bytecode → WASM
-│       └── BytecodeSerializer.java     # Serialization
+│       ├── BytecodeSerializer.java     # Serialization
+│       ├── JvmBytecodeGenerator.java   # Bytecode → JVM .class
+│       ├── StarlarkRuntime.java        # JVM runtime support
+│       ├── CompiledStarlarkLoader.java # Dynamic class loading
+│       ├── BytecodeTarget.java         # Compilation target enum
+│       ├── BytecodeBackend.java        # Pluggable backend interface
+│       └── MultiTargetCompiler.java    # Multi-backend compilation
 └── syntax/
     └── Program.java                    # Modified for bytecode support
+
+larky/src/main/java/com/verygood/security/larky/jsr223/
+├── LarkyScriptEngine.java              # JSR-223 engine with bytecode support
+└── LarkyCompiledScript.java            # Compiled script with multi-target output
 
 libstarlark/src/test/java/net/starlark/java/eval/compiler/
 └── BytecodeCompilerTest.java           # Comprehensive tests
