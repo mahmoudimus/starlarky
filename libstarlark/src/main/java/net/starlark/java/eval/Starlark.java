@@ -899,24 +899,44 @@ public final class Starlark {
       // Add current globals
       globals.putAll(module.getGlobals());
 
-      Object result = BytecodeInterpreter.execute(
-          prog.getBytecode(),
-          thread,
-          globals,
-          prog.getFilename());
+      Object result;
+      try {
+        result = BytecodeInterpreter.execute(
+            prog.getBytecode(),
+            thread,
+            globals,
+            prog.getFilename());
+        if (Boolean.getBoolean("debug.globals")) {
+          System.out.println("Bytecode execution completed successfully. Result: " + result);
+        }
+      } catch (Exception e) {
+        if (Boolean.getBoolean("debug.globals")) {
+          System.out.println("Bytecode execution failed: " + e.getMessage());
+          e.printStackTrace();
+        }
+        throw e;
+      }
 
-      // Write back modified globals to module (skip predeclared/universe)
+      // Write back ALL globals to module (skip predeclared/universe)
       ImmutableMap<String, Object> predeclared = module.getPredeclaredBindings();
+      if (Boolean.getBoolean("debug.globals")) {
+        System.out.println("Writing back globals to module:");
+        for (String name : globals.keySet()) {
+          boolean isUniverse = Starlark.UNIVERSE.containsKey(name);
+          boolean isPredeclared = predeclared.containsKey(name);
+          System.out.println("  " + name + ": " + globals.get(name) +
+              (isUniverse ? " [UNIVERSE]" : "") + (isPredeclared ? " [PREDECLARED]" : ""));
+        }
+      }
       for (Map.Entry<String, Object> entry : globals.entrySet()) {
         String name = entry.getKey();
         Object value = entry.getValue();
         // Skip universe and predeclared bindings
         if (!Starlark.UNIVERSE.containsKey(name) && !predeclared.containsKey(name)) {
-          // Only update if the value changed or is new
-          Object oldValue = module.getGlobals().get(name);
-          if (oldValue != value) {
-            module.setGlobal(name, value);
+          if (Boolean.getBoolean("debug.globals")) {
+            System.out.println("  -> Setting module global: " + name + " = " + value);
           }
+          module.setGlobal(name, value);
         }
       }
 
