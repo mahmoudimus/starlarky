@@ -490,8 +490,12 @@ public final class BytecodeCompiler {
       compileExpression(elem);
     }
 
-    // Build list from elements on stack
-    builder.emit(Opcode.BUILD_LIST, node.getElements().size(), lineNum);
+    // Build list or tuple from elements on stack
+    if (node.isTuple()) {
+      builder.emit(Opcode.BUILD_TUPLE, node.getElements().size(), lineNum);
+    } else {
+      builder.emit(Opcode.BUILD_LIST, node.getElements().size(), lineNum);
+    }
   }
 
   public void visit(DictExpression node) {
