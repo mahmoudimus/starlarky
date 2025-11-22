@@ -310,6 +310,13 @@ public final class BytecodeCompiler {
     BytecodeCompiler funcCompiler = new BytecodeCompiler(funcName);
     funcCompiler.builder.setParameterCount(paramNames.size());
 
+    // Set local count from resolved function information
+    Resolver.Function resolvedFunc = node.getResolvedFunction();
+    if (resolvedFunc != null) {
+      int localCount = resolvedFunc.getLocals().size();
+      funcCompiler.builder.setLocalCount(localCount);
+    }
+
     // Compile function body statements
     for (Statement stmt : node.getBody()) {
       funcCompiler.compileStatement(stmt);
@@ -318,6 +325,9 @@ public final class BytecodeCompiler {
     // Ensure function returns None if no explicit return
     funcCompiler.builder.emit(Opcode.LOAD_NONE, lineNum);
     funcCompiler.builder.emit(Opcode.RETURN, lineNum);
+
+    // Patch jumps before building the chunk
+    funcCompiler.patchJumps();
 
     BytecodeChunk funcChunk = funcCompiler.builder.build();
 

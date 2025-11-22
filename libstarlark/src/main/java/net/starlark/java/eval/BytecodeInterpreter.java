@@ -668,6 +668,9 @@ public final class BytecodeInterpreter {
     } catch (EvalException ex) {
       // Re-throw EvalException as-is
       throw ex;
+    } catch (InterruptedException ex) {
+      // Re-throw InterruptedException as-is (don't wrap it)
+      throw ex;
     } catch (Exception ex) {
       // Wrap unexpected exceptions
       throw new EvalException("Internal error during bytecode execution", ex);
