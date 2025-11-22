@@ -6,7 +6,7 @@ Implementing a bytecode compilation and execution system for Starlark as an alte
 
 **Branch:** `claude/multi-backend-compilation-015oF9gXw953BieDzsJgaAoC`
 
-**Current Status:** 43/60 tests passing (72%) ⬆️ +4 from interrupt handling fix!
+**Current Status:** 47/60 tests passing (78%) ⬆️ +8 from interrupt & mutation tracking fixes!
 
 ## Architecture
 
