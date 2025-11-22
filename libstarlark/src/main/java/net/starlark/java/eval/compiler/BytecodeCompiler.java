@@ -83,6 +83,12 @@ public final class BytecodeCompiler {
     }
     compiler.builder.setLocalCount(func.getLocals().size());
 
+    // Add local variable names for better error messages
+    for (Resolver.Binding binding : func.getLocals()) {
+      String localName = binding.getName() != null ? binding.getName() : "?";
+      compiler.builder.addLocalName(localName);
+    }
+
     // Compile function body
     for (Statement stmt : func.getBody()) {
       compiler.compileStatement(stmt);
@@ -310,11 +316,17 @@ public final class BytecodeCompiler {
     BytecodeCompiler funcCompiler = new BytecodeCompiler(funcName);
     funcCompiler.builder.setParameterCount(paramNames.size());
 
-    // Set local count from resolved function information
+    // Set local count and names from resolved function information
     Resolver.Function resolvedFunc = node.getResolvedFunction();
     if (resolvedFunc != null) {
       int localCount = resolvedFunc.getLocals().size();
       funcCompiler.builder.setLocalCount(localCount);
+
+      // Add local variable names for better error messages
+      for (Resolver.Binding binding : resolvedFunc.getLocals()) {
+        String localName = binding.getName() != null ? binding.getName() : "?";
+        funcCompiler.builder.addLocalName(localName);
+      }
     }
 
     // Compile function body statements
