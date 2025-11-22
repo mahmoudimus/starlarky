@@ -39,6 +39,7 @@ public final class BytecodeChunk {
   private final List<String> parameterNames;
   private final List<String> localNames; // Names of all local variables for error messages
   private final List<Integer> lineNumbers; // Line number for each instruction
+  private final List<Integer> columnNumbers; // Column number for each instruction
   private final boolean frozen;
 
   private BytecodeChunk(
@@ -50,6 +51,7 @@ public final class BytecodeChunk {
       List<String> parameterNames,
       List<String> localNames,
       List<Integer> lineNumbers,
+      List<Integer> columnNumbers,
       boolean frozen) {
     this.name = name;
     this.constantPool = constantPool;
@@ -59,6 +61,7 @@ public final class BytecodeChunk {
     this.parameterNames = parameterNames;
     this.localNames = localNames != null ? localNames : new ArrayList<>();
     this.lineNumbers = lineNumbers;
+    this.columnNumbers = columnNumbers != null ? columnNumbers : new ArrayList<>();
     this.frozen = frozen;
   }
 
@@ -102,6 +105,10 @@ public final class BytecodeChunk {
     return Collections.unmodifiableList(lineNumbers);
   }
 
+  public List<Integer> getColumnNumbers() {
+    return Collections.unmodifiableList(columnNumbers);
+  }
+
   public boolean isFrozen() {
     return frozen;
   }
@@ -114,6 +121,16 @@ public final class BytecodeChunk {
       return -1;
     }
     return lineNumbers.get(instructionIndex);
+  }
+
+  /**
+   * Returns the column number for the instruction at the given index.
+   */
+  public int getColumnNumber(int instructionIndex) {
+    if (instructionIndex < 0 || instructionIndex >= columnNumbers.size()) {
+      return 0; // Return 0 as default column if not available
+    }
+    return columnNumbers.get(instructionIndex);
   }
 
   /**
@@ -224,6 +241,7 @@ public final class BytecodeChunk {
     private final ConstantPool constantPool;
     private final List<Instruction> instructions;
     private final List<Integer> lineNumbers;
+    private final List<Integer> columnNumbers;
     private final List<String> parameterNames;
     private final List<String> localNames;
     private int localCount;
@@ -235,6 +253,7 @@ public final class BytecodeChunk {
       this.constantPool = new ConstantPool();
       this.instructions = new ArrayList<>();
       this.lineNumbers = new ArrayList<>();
+      this.columnNumbers = new ArrayList<>();
       this.parameterNames = new ArrayList<>();
       this.localNames = new ArrayList<>();
       this.localCount = 0;
@@ -274,6 +293,7 @@ public final class BytecodeChunk {
       Instruction instr = Instruction.create(opcode, currentOffset);
       instructions.add(instr);
       lineNumbers.add(lineNumber);
+      columnNumbers.add(0); // Default column to 0
       currentOffset += instr.getSize();
       return this;
     }
@@ -282,6 +302,7 @@ public final class BytecodeChunk {
       Instruction instr = Instruction.create(opcode, operand1, currentOffset);
       instructions.add(instr);
       lineNumbers.add(lineNumber);
+      columnNumbers.add(0); // Default column to 0
       currentOffset += instr.getSize();
       return this;
     }
@@ -290,6 +311,35 @@ public final class BytecodeChunk {
       Instruction instr = Instruction.create(opcode, operand1, operand2, currentOffset);
       instructions.add(instr);
       lineNumbers.add(lineNumber);
+      columnNumbers.add(0); // Default column to 0
+      currentOffset += instr.getSize();
+      return this;
+    }
+
+    // New methods with explicit column numbers (for future use)
+    public Builder emitWithColumn(Opcode opcode, int lineNumber, int columnNumber) {
+      Instruction instr = Instruction.create(opcode, currentOffset);
+      instructions.add(instr);
+      lineNumbers.add(lineNumber);
+      columnNumbers.add(columnNumber);
+      currentOffset += instr.getSize();
+      return this;
+    }
+
+    public Builder emitWithColumn(Opcode opcode, int operand1, int lineNumber, int columnNumber) {
+      Instruction instr = Instruction.create(opcode, operand1, currentOffset);
+      instructions.add(instr);
+      lineNumbers.add(lineNumber);
+      columnNumbers.add(columnNumber);
+      currentOffset += instr.getSize();
+      return this;
+    }
+
+    public Builder emitWithColumn(Opcode opcode, int operand1, int operand2, int lineNumber, int columnNumber) {
+      Instruction instr = Instruction.create(opcode, operand1, operand2, currentOffset);
+      instructions.add(instr);
+      lineNumbers.add(lineNumber);
+      columnNumbers.add(columnNumber);
       currentOffset += instr.getSize();
       return this;
     }
@@ -327,6 +377,7 @@ public final class BytecodeChunk {
           new ArrayList<>(parameterNames),
           new ArrayList<>(localNames),
           new ArrayList<>(lineNumbers),
+          new ArrayList<>(columnNumbers),
           true);
     }
   }

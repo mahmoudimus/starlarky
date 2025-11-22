@@ -183,7 +183,8 @@ public final class BytecodeInterpreter {
     if (lineNum < 0) {
       lineNum = 0;
     }
-    return Location.fromFileLineColumn(filename, lineNum, 0);
+    int columnNum = chunk.getColumnNumber(ip);
+    return Location.fromFileLineColumn(filename, lineNum, columnNum);
   }
 
   /**

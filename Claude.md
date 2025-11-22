@@ -6,7 +6,7 @@ Implementing a bytecode compilation and execution system for Starlark as an alte
 
 **Branch:** `claude/multi-backend-compilation-015oF9gXw953BieDzsJgaAoC`
 
-**Current Status:** 56/60 tests passing (93%) ⬆️ +2 from LOAD_MODULE implementation!
+**Current Status:** 59/60 tests passing (98%) ⬆️ +3 from column number support!
 
 ## Architecture
 
@@ -439,15 +439,10 @@ Key differences:
 ## Goal
 
 **Target:** 60/60 tests passing (100%)
-**Current:** 56/60 tests passing (93%)
-**Remaining:** 4 tests
+**Current:** 59/60 tests passing (98%)
+**Remaining:** 1 test
 
-### Remaining Failures:
-1. **Comprehension validation (3 tests)** - Need column number support in bytecode
-   - testListComprehensionFailsOnNonSequence
-   - testListComprehensionOnStringIsForbidden
-   - testDictComprehensionOnNonIterable
-   - All have correct error messages and line numbers, but expect specific columns (e.g., expected 17, got 0)
-
-2. **Keyword arguments unpacking (1 test)** - Not yet implemented
+### Remaining Failure:
+1. **Keyword arguments unpacking (1 test)** - Not yet implemented
    - testDictKeysDuplicateKeyArgs - Requires **kwargs unpacking support
+   - Test: `int('1', base=10, **dict(base=16))` should error with "int() got multiple values for argument 'base'"
