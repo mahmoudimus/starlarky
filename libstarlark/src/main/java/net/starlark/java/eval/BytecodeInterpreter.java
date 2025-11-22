@@ -200,8 +200,18 @@ public final class BytecodeInterpreter {
 
     try {
       while (ip < instructions.size()) {
-        // Check for thread interruption and execution limits
+        // Check for thread interruption
         thread.checkInterrupt();
+
+        // Count execution steps and check limit
+        if (++thread.steps >= thread.stepLimit) {
+          throw new EvalException("Starlark computation cancelled: too many steps");
+        }
+
+        // Check expiration time
+        if (thread.isExpired()) {
+          throw new EvalException("Starlark computation cancelled: past expiration date");
+        }
 
         Instruction instr = instructions.get(ip);
         Opcode opcode = instr.getOpcode();
