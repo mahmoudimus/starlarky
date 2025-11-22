@@ -102,8 +102,17 @@ public final class BytecodeFunction implements StarlarkCallable {
       argArray[i] = args.get(i);
     }
 
-    // Execute the function body bytecode with the arguments
-    return BytecodeInterpreter.executeWithArgs(chunk, thread, argArray, globals, filename);
+    // Push this function onto the call stack
+    thread.push(this);
+    try {
+      // Execute the function body bytecode with the arguments
+      return BytecodeInterpreter.executeWithArgs(chunk, thread, argArray, globals, filename);
+    } catch (EvalException ex) {
+      // Ensure the exception has call stack information
+      throw ex.ensureStack(thread);
+    } finally {
+      thread.pop();
+    }
   }
 
   @Override
