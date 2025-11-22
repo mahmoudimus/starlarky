@@ -179,6 +179,23 @@ public final class BytecodeInterpreter {
   private Object run() throws EvalException, InterruptedException {
     List<Instruction> instructions = chunk.getInstructions();
 
+    // Debug: dump all instructions at start
+    if (Boolean.getBoolean("debug.bytecode")) {
+      System.out.println("=== BYTECODE CHUNK (" + instructions.size() + " instructions) ===");
+      for (int i = 0; i < instructions.size(); i++) {
+        Instruction instr = instructions.get(i);
+        System.out.printf("[%3d] %-20s", i, instr.getOpcode());
+        if (instr.getOpcode().getOperandCount() >= 1) {
+          System.out.printf(" %d", instr.getOperand1());
+        }
+        if (instr.getOpcode().getOperandCount() >= 2) {
+          System.out.printf(" %d", instr.getOperand2());
+        }
+        System.out.println();
+      }
+      System.out.println("=== EXECUTION ===");
+    }
+
     try {
       while (ip < instructions.size()) {
         // Check for thread interruption and execution limits
@@ -186,6 +203,18 @@ public final class BytecodeInterpreter {
 
         Instruction instr = instructions.get(ip);
         Opcode opcode = instr.getOpcode();
+
+        // Debug logging for bytecode execution
+        if (Boolean.getBoolean("debug.bytecode")) {
+          System.out.printf("[%3d] %-20s  stack=%d", ip, opcode, stack.size());
+          if (opcode.getOperandCount() >= 1) {
+            System.out.printf(" op1=%d", instr.getOperand1());
+          }
+          if (opcode.getOperandCount() >= 2) {
+            System.out.printf(" op2=%d", instr.getOperand2());
+          }
+          System.out.println();
+        }
 
       // Execute instruction
       switch (opcode) {

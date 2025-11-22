@@ -294,10 +294,10 @@ public final class BytecodeChunk {
         throw new IllegalArgumentException("Invalid instruction index: " + index);
       }
       Instruction oldInstr = instructions.get(index);
-      // Create new instruction with updated operand
-      Instruction newInstr = Instruction.create(oldInstr.getOpcode(), currentOffset, newOperand);
+      // Create new instruction with updated operand (preserve old offset)
+      Instruction newInstr = Instruction.create(oldInstr.getOpcode(), newOperand, oldInstr.getOffset());
       if (oldInstr.getOpcode().getOperandCount() == 2) {
-        newInstr = Instruction.create(oldInstr.getOpcode(), currentOffset, newOperand, oldInstr.getOperand2());
+        newInstr = Instruction.create(oldInstr.getOpcode(), newOperand, oldInstr.getOperand2(), oldInstr.getOffset());
       }
       instructions.set(index, newInstr);
     }
