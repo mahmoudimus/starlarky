@@ -55,6 +55,7 @@ public final class BytecodeInterpreter {
   private final Map<String, Object> globals;
   private final List<Object> stack;
   private final String filename;
+  private final Map<Iterator<?>, Object> iteratorToIterable; // Track iterables for mutation checking
   private int ip; // Instruction pointer
 
   private BytecodeInterpreter(
@@ -65,6 +66,7 @@ public final class BytecodeInterpreter {
     this.globals = globals != null ? globals : new HashMap<>();
     this.stack = new ArrayList<>();
     this.filename = filename != null ? filename : "<bytecode>";
+    this.iteratorToIterable = new HashMap<>();
     this.ip = 0;
   }
 
@@ -579,12 +581,13 @@ public final class BytecodeInterpreter {
         // Iteration
         case GET_ITER:
           {
-            Object iterable = peek(); // Don't pop, keep iterable on stack
+            Object iterable = pop();
             Iterable<?> starlarkIterable = Starlark.toIterable(iterable);
             Iterator<?> iterator = starlarkIterable.iterator();
             // Track mutations on the iterable during iteration
             EvalUtils.addIterator(iterable);
-            push(iterator); // Stack now has: [iterable, iterator]
+            iteratorToIterable.put(iterator, iterable); // Store mapping for cleanup later
+            push(iterator);
           }
           break;
 
@@ -595,8 +598,10 @@ public final class BytecodeInterpreter {
             if (!iterator.hasNext()) {
               // Iterator exhausted, clean up and jump to end of loop
               pop(); // Pop iterator
-              Object iterable = pop(); // Pop iterable
-              EvalUtils.removeIterator(iterable);
+              Object iterable = iteratorToIterable.remove(iterator);
+              if (iterable != null) {
+                EvalUtils.removeIterator(iterable);
+              }
               ip = instr.getOperand1() - 1;
             } else {
               push(iterator.next());
