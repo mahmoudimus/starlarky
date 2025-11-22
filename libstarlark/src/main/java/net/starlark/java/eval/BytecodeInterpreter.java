@@ -49,6 +49,20 @@ import net.starlark.java.syntax.TokenKind;
  */
 public final class BytecodeInterpreter {
 
+  /**
+   * Wrapper for a Module with its name, used during load statement execution
+   * to provide better error messages.
+   */
+  private static final class ModuleWithName {
+    final Module module;
+    final String moduleName;
+
+    ModuleWithName(Module module, String moduleName) {
+      this.module = module;
+      this.moduleName = moduleName;
+    }
+  }
+
   private final BytecodeChunk chunk;
   private final StarlarkThread thread;
   private final Object[] locals;
@@ -533,8 +547,20 @@ public final class BytecodeInterpreter {
           {
             String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
             Object object = pop();
-            push(Starlark.getattr(
-                thread.mutability(), thread.getSemantics(), object, name, /*defaultValue=*/ null));
+
+            // Special handling for ModuleWithName (used in load statements)
+            if (object instanceof ModuleWithName) {
+              ModuleWithName mwn = (ModuleWithName) object;
+              Object value = mwn.module.getGlobal(name);
+              if (value == null) {
+                throw Starlark.errorf(
+                    "file '%s' does not contain symbol '%s'", mwn.moduleName, name);
+              }
+              push(value);
+            } else {
+              push(Starlark.getattr(
+                  thread.mutability(), thread.getSemantics(), object, name, /*defaultValue=*/ null));
+            }
           }
           break;
 
@@ -702,8 +728,26 @@ public final class BytecodeInterpreter {
           break;
 
         case LOAD_MODULE:
-          // TODO: Implement module loading
-          throw new UnsupportedOperationException("LOAD_MODULE not yet implemented");
+          {
+            // Get module name from constant pool
+            String moduleName = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
+
+            // Get the loader from the thread
+            StarlarkThread.Loader loader = thread.getLoader();
+            if (loader == null) {
+              throw Starlark.errorf("load statements may not be executed in this thread");
+            }
+
+            // Load the module
+            Module module = loader.load(moduleName);
+            if (module == null) {
+              throw Starlark.errorf("module '%s' not found", moduleName);
+            }
+
+            // Push the module with its name onto the stack (for better error messages)
+            push(new ModuleWithName(module, moduleName));
+          }
+          break;
 
         default:
           throw new UnsupportedOperationException("Unsupported opcode: " + opcode);
