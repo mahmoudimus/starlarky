@@ -6,7 +6,7 @@ Implementing a bytecode compilation and execution system for Starlark as an alte
 
 **Branch:** `claude/multi-backend-compilation-015oF9gXw953BieDzsJgaAoC`
 
-**Current Status:** 39/60 tests passing (65%)
+**Current Status:** 43/60 tests passing (72%) ⬆️ +4 from interrupt handling fix!
 
 ## Architecture
 
@@ -81,37 +81,32 @@ y = [x + 1 for x in [1, 2, 3]]  # Now works!
 
 ## Test Results
 
-### Passing: 39/60 (65%)
+### Passing: 43/60 (72%)
 
 All basic functionality works:
 - Arithmetic operations
 - Variable assignments
-- Function definitions and calls
+- Function definitions and calls (with proper local variables)
 - Basic loops and conditionals
 - Tuple/list/dict construction
 - Comprehensions (list and dict)
 - String operations
 - Boolean logic
+- **Thread interruption** ✅ NEW!
 
-### Failing: 21/60 (35%)
+### Failing: 17/60 (28%)
 
-#### Category 1: Interrupt Handling (4 tests)
-- `testExecutionNotStartedOnInterrupt`
-- `testForComprehensionAbortedOnInterrupt`
-- `testForLoopAbortedOnInterrupt`
-- `testFunctionCallsNotStartedOnInterrupt`
+#### Category 1: Interrupt Handling (4 tests) ✅ **FIXED!**
+All 4 interrupt tests now pass:
+- `testExecutionNotStartedOnInterrupt` ✅
+- `testForComprehensionAbortedOnInterrupt` ✅
+- `testForLoopAbortedOnInterrupt` ✅
+- `testFunctionCallsNotStartedOnInterrupt` ✅
 
-**Issue:** Bytecode interpreter throws EvalException instead of InterruptedException
-
-**Root Cause:**
-```java
-// BytecodeInterpreter catches InterruptedException and wraps it:
-catch (InterruptedException e) {
-  throw new EvalException("interrupted", e);
-}
-```
-
-**Fix Required:** Let InterruptedException propagate directly, don't wrap it.
+**Fixes Applied:**
+1. Function local variables - Set localCount from `Resolver.Function.getLocals().size()`
+2. Jump patching for functions - Call `patchJumps()` before building function chunk
+3. InterruptedException propagation - Added catch block to re-throw without wrapping
 
 ---
 
@@ -398,7 +393,9 @@ Some interrupt tests cause Maven to hang after completion. The tests DO complete
 2. **00c245c** - Implement list and dict comprehension compilation (partial)
 3. **64f34d5** - Fix comprehension stack depth tracking and implement jump patching
 4. **85ed46a** - Add critical fixes: globals persistence, thread interruption, duplicate key detection
-5. **c4da1a7** - Fix jump patching in bytecode compiler - now 39/60 tests pass ⭐ **(latest)**
+5. **c4da1a7** - Fix jump patching in bytecode compiler - now 39/60 tests pass
+6. **1f5c3f3** - Add progress snapshot documentation (Claude.md)
+7. **e80759d** - Fix function local variables and interrupt handling - now 43/60 tests pass ⭐ **(latest)**
 
 ## How to Resume Work
 
