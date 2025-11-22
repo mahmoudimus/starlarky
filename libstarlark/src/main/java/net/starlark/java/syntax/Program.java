@@ -15,6 +15,9 @@ package net.starlark.java.syntax;
 
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
+import javax.annotation.Nullable;
+import net.starlark.java.eval.compiler.BytecodeChunk;
+import net.starlark.java.eval.compiler.BytecodeCompiler;
 
 /**
  * An opaque, executable representation of a valid Starlark program. Programs may
@@ -27,20 +30,62 @@ public final class Program {
   private final ImmutableList<String> loads;
   private final ImmutableList<Location> loadLocations;
 
+  // Compiled bytecode representation (may be null if compilation is disabled)
+  @Nullable private final BytecodeChunk bytecode;
+
   private Program(
       Resolver.Function body, ImmutableList<String> loads, ImmutableList<Location> loadLocations) {
+    // Bytecode compilation disabled by default until all features implemented
+    // Set system property -Dstarlark.bytecode=true to enable
+    this(body, loads, loadLocations, Boolean.getBoolean("starlark.bytecode"));
+  }
+
+  private Program(
+      Resolver.Function body,
+      ImmutableList<String> loads,
+      ImmutableList<Location> loadLocations,
+      boolean enableBytecode) {
     Preconditions.checkArgument(
         loads.size() == loadLocations.size(), "each load must have a corresponding location");
 
-    // TODO(adonovan): compile here.
     this.body = body;
     this.loads = loads;
     this.loadLocations = loadLocations;
+
+    // Compile to bytecode if enabled
+    BytecodeChunk compiledBytecode = null;
+    if (enableBytecode) {
+      try {
+        compiledBytecode = BytecodeCompiler.compileFunction(body);
+      } catch (Exception e) {
+        // If bytecode compilation fails, fall back to interpreted mode
+        // This ensures backward compatibility
+        System.err.println("Warning: Bytecode compilation failed: " + e.getMessage());
+        compiledBytecode = null;
+      }
+    }
+    this.bytecode = compiledBytecode;
   }
 
   // TODO(adonovan): eliminate once Eval no longer needs access to syntax.
   public Resolver.Function getResolvedFunction() {
     return body;
+  }
+
+  /**
+   * Returns the compiled bytecode for this program, or null if bytecode compilation
+   * is disabled or failed.
+   */
+  @Nullable
+  public BytecodeChunk getBytecode() {
+    return bytecode;
+  }
+
+  /**
+   * Returns true if this program has compiled bytecode available.
+   */
+  public boolean hasBytecode() {
+    return bytecode != null;
   }
 
   /** Returns the file name of this compiled program. */
