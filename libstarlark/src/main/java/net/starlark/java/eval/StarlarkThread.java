@@ -245,6 +245,17 @@ public final class StarlarkThread {
             env.put(((StarlarkFunction) fn).rfn.getLocals().get(i).getName(), local);
           }
         }
+      } else if (fn instanceof BytecodeFunction) {
+        BytecodeFunction bcfn = (BytecodeFunction) fn;
+        java.util.List<String> localNames = bcfn.getChunk().getLocalNames();
+        if (locals != null) {
+          for (int i = 0; i < locals.length && i < localNames.size(); i++) {
+            Object local = locals[i];
+            if (local != null) {
+              env.put(localNames.get(i), local);
+            }
+          }
+        }
       }
       return env.build();
     }

@@ -30,7 +30,7 @@ public final class FunctionTest {
   @Test
   public void testDef() throws Exception {
     ev.exec("def f(a, b=1, *args, c, d=2, **kwargs): pass");
-    StarlarkFunction f = (StarlarkFunction) ev.lookup("f");
+    UserDefinedFunction f = (UserDefinedFunction) ev.lookup("f");
     assertThat(f).isNotNull();
     assertThat(f.getName()).isEqualTo("f");
     assertThat(f.getParameterNames())
@@ -44,7 +44,7 @@ public final class FunctionTest {
 
     // same, sans varargs
     ev.exec("def g(a, b=1, *, c, d=2, **kwargs): pass");
-    StarlarkFunction g = (StarlarkFunction) ev.lookup("g");
+    UserDefinedFunction g = (UserDefinedFunction) ev.lookup("g");
     assertThat(g.getParameterNames()).containsExactly("a", "b", "c", "d", "kwargs").inOrder();
     assertThat(g.hasVarargs()).isFalse();
     assertThat(g.hasKwargs()).isTrue();
@@ -53,7 +53,7 @@ public final class FunctionTest {
         .inOrder();
   }
 
-  private static List<Object> getDefaults(StarlarkFunction fn) {
+  private static List<Object> getDefaults(UserDefinedFunction fn) {
     List<Object> defaults = new ArrayList<>();
     for (int i = 0; i < fn.getParameterNames().size(); i++) {
       defaults.add(fn.getDefaultValue(i));

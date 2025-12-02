@@ -37,7 +37,7 @@ import net.starlark.java.syntax.Location;
  *   <li>**kwargs
  * </ul>
  */
-public final class BytecodeFunction implements StarlarkCallable {
+public final class BytecodeFunction implements UserDefinedFunction {
 
   private final String name;
   private final Location location;
@@ -128,20 +128,45 @@ public final class BytecodeFunction implements StarlarkCallable {
     return chunk;
   }
 
+  @Override
   public ImmutableList<String> getParameterNames() {
     return parameterNames;
   }
 
+  @Override
   public boolean hasVarargs() {
     return hasVarargs;
   }
 
+  @Override
   public boolean hasKwargs() {
     return hasKwargs;
   }
 
-  public int getNumKeywordOnlyParams() {
+  @Override
+  public int numKeywordOnlyParams() {
     return numKeywordOnlyParams;
+  }
+
+  /**
+   * Returns the default value of the ith parameter, or null if the parameter
+   * is required or is *args/**kwargs.
+   */
+  @Override
+  public Object getDefaultValue(int i) {
+    if (i < 0 || i >= parameterNames.size()) {
+      throw new IndexOutOfBoundsException();
+    }
+    int nparams = parameterNames.size() - (hasKwargs ? 1 : 0) - (hasVarargs ? 1 : 0);
+    int prefix = nparams - defaultValues.size();
+    if (i < prefix) {
+      return null; // implicit prefix of mandatory parameters
+    }
+    if (i < nparams) {
+      Object v = defaultValues.get(i - prefix);
+      return v == MANDATORY ? null : v;
+    }
+    return null; // *args or **kwargs
   }
 
   public int getLocalCount() {
@@ -182,16 +207,14 @@ public final class BytecodeFunction implements StarlarkCallable {
     // Compute the effective parameter values
     Object[] locals = processArgs(thread.mutability(), positional, named);
 
-    // Push this function onto the call stack
-    thread.push(this);
-    try {
-      // Execute the function body bytecode with the processed locals
-      return BytecodeInterpreter.executeWithLocals(chunk, thread, locals, globals, filename);
-    } catch (EvalException ex) {
-      throw ex.ensureStack(thread);
-    } finally {
-      thread.pop();
-    }
+    // Set the frame's locals so debugging APIs can access them
+    // Note: Starlark.fastcall already pushes us onto the call stack,
+    // so we just need to set the locals on the current frame.
+    StarlarkThread.Frame fr = thread.frame(0);
+    fr.locals = locals;
+
+    // Execute the function body bytecode with the processed locals
+    return BytecodeInterpreter.executeWithLocals(chunk, thread, locals, globals, filename);
   }
 
   /**

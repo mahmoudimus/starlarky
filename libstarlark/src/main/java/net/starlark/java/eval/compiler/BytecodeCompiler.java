@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import net.starlark.java.eval.BytecodeFunction;
 import net.starlark.java.eval.StarlarkFloat;
 import net.starlark.java.eval.StarlarkInt;
 import net.starlark.java.syntax.*;
@@ -211,11 +212,53 @@ public final class BytecodeCompiler {
   // Statement visitors
 
   public void visit(AssignmentStatement node) {
-    // Compile the RHS expression
-    compileExpression(node.getRHS());
+    int lineNum = getLine(node);
 
-    // Handle LHS assignment
-    compileLValue(node.getLHS());
+    if (node.isAugmented()) {
+      // Augmented assignment: x += y becomes x = x + y
+      // 1. Load LHS value
+      compileExpression(node.getLHS());
+      // 2. Load RHS value
+      compileExpression(node.getRHS());
+      // 3. Apply the binary operation
+      Opcode binOp = getOpcodeForAugmentedOp(node.getOperator());
+      builder.emit(binOp, lineNum);
+      // 4. Store to LHS
+      compileLValue(node.getLHS());
+    } else {
+      // Regular assignment: compile RHS, store to LHS
+      compileExpression(node.getRHS());
+      compileLValue(node.getLHS());
+    }
+  }
+
+  private Opcode getOpcodeForAugmentedOp(TokenKind op) {
+    switch (op) {
+      case PLUS_EQUALS:
+        return Opcode.ADD;
+      case MINUS_EQUALS:
+        return Opcode.SUBTRACT;
+      case STAR_EQUALS:
+        return Opcode.MULTIPLY;
+      case SLASH_EQUALS:
+        return Opcode.DIVIDE;
+      case SLASH_SLASH_EQUALS:
+        return Opcode.FLOOR_DIV;
+      case PERCENT_EQUALS:
+        return Opcode.MODULO;
+      case PIPE_EQUALS:
+        return Opcode.BIT_OR;
+      case AMPERSAND_EQUALS:
+        return Opcode.BIT_AND;
+      case CARET_EQUALS:
+        return Opcode.BIT_XOR;
+      case GREATER_GREATER_EQUALS:
+        return Opcode.RIGHT_SHIFT;
+      case LESS_LESS_EQUALS:
+        return Opcode.LEFT_SHIFT;
+      default:
+        throw new UnsupportedOperationException("Unsupported augmented operator: " + op);
+    }
   }
 
   public void visit(ExpressionStatement node) {
@@ -329,27 +372,42 @@ public final class BytecodeCompiler {
 
     // Compile default value expressions before MAKE_FUNCTION
     // Default values are pushed onto the stack and consumed by MAKE_FUNCTION
+    // The defaults tuple covers parameters from first-with-default to last-ordinary-param.
+    // Required parameters in that range get MANDATORY sentinel.
     List<Parameter> params = node.getParameters();
     int numDefaults = 0;
+    boolean seenFirstDefault = false;
+    boolean seenStar = false;  // Track if we're past *args
 
     // Count parameters excluding *args and **kwargs
     int nparams = params.size() - (hasVarargs ? 1 : 0) - (hasKwargs ? 1 : 0);
 
     // Find where defaults start and compile them
+    // Parameters after * (keyword-only) that don't have defaults need MANDATORY
     for (int i = 0; i < params.size(); i++) {
       Parameter param = params.get(i);
-      // Skip *args and **kwargs - they don't have defaults
-      if (param instanceof Parameter.Star || param instanceof Parameter.StarStar) {
+
+      // Track if we're past *args (keyword-only zone)
+      if (param instanceof Parameter.Star) {
+        seenStar = true;
         continue;
       }
+      if (param instanceof Parameter.StarStar) {
+        continue;
+      }
+
       Expression defaultExpr = param.getDefaultValue();
       if (defaultExpr != null) {
         compileExpression(defaultExpr);
         numDefaults++;
-      } else if (numDefaults > 0) {
-        // After seeing a default, all non-kwonly params must have defaults
-        // For required keyword-only params, push MANDATORY sentinel
-        // This is handled at runtime since MANDATORY is a runtime value
+        seenFirstDefault = true;
+      } else if (seenFirstDefault || seenStar) {
+        // After seeing a default OR in keyword-only zone without defaults,
+        // we need MANDATORY sentinel for required params
+        // Load the MANDATORY constant
+        int mandatoryIndex = builder.addConstant(BytecodeFunction.MANDATORY);
+        builder.emit(Opcode.LOAD_CONST, mandatoryIndex, lineNum);
+        numDefaults++;
       }
     }
 
@@ -583,6 +641,10 @@ public final class BytecodeCompiler {
 
   public void visit(CallExpression node) {
     int lineNum = getLine(node);
+    // Get the lparen location for precise call site tracking
+    Location lparenLoc = node.getLparenLocation();
+    int callLineNum = lparenLoc.line();
+    int callColNum = lparenLoc.column();
 
     // Check if we have *args or **kwargs expansion
     boolean hasStar = false;
@@ -656,7 +718,7 @@ public final class BytecodeCompiler {
 
       // Flags encode what's on stack (for future optimization, not currently used)
       int flags = (starArg != null ? 1 : 0) | (starStarArg != null ? 2 : 0);
-      builder.emit(Opcode.CALL_EX, flags, lineNum);
+      builder.emitWithColumn(Opcode.CALL_EX, flags, callLineNum, callColNum);
 
     } else {
       // Simple call without *args or **kwargs expansion
@@ -676,7 +738,7 @@ public final class BytecodeCompiler {
         }
       }
 
-      builder.emit(Opcode.CALL, posArgCount, kwArgCount, lineNum);
+      builder.emitWithColumn(Opcode.CALL, posArgCount, kwArgCount, callLineNum, callColNum);
     }
   }
 

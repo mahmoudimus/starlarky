@@ -931,12 +931,17 @@ public final class Starlark {
       for (Map.Entry<String, Object> entry : globals.entrySet()) {
         String name = entry.getKey();
         Object value = entry.getValue();
-        // Skip universe and predeclared bindings
-        if (!Starlark.UNIVERSE.containsKey(name) && !predeclared.containsKey(name)) {
-          if (Boolean.getBoolean("debug.globals")) {
-            System.out.println("  -> Setting module global: " + name + " = " + value);
+        // Skip universe bindings, but allow overriding predeclared bindings
+        // (assignments to predeclared variables should shadow them)
+        if (!Starlark.UNIVERSE.containsKey(name)) {
+          // Check if the value changed from predeclared (i.e., it was assigned to)
+          Object predeclaredValue = predeclared.get(name);
+          if (predeclaredValue == null || !predeclaredValue.equals(value)) {
+            if (Boolean.getBoolean("debug.globals")) {
+              System.out.println("  -> Setting module global: " + name + " = " + value);
+            }
+            module.setGlobal(name, value);
           }
-          module.setGlobal(name, value);
         }
       }
 
