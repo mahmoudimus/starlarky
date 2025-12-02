@@ -230,24 +230,29 @@ public final class BytecodeCompiler {
     // Compile condition
     compileExpression(node.getCondition());
 
+    ImmutableList<Statement> elseBlock = node.getElseBlock();
+    boolean hasElse = elseBlock != null && !elseBlock.isEmpty();
+
     String elseLabel = newLabel("else");
     String endLabel = newLabel("endif");
 
-    // Jump to else if condition is false
-    emitJump(Opcode.POP_JUMP_IF_FALSE, elseLabel, lineNum);
+    // Jump to else/end if condition is false
+    emitJump(Opcode.POP_JUMP_IF_FALSE, hasElse ? elseLabel : endLabel, lineNum);
 
     // Compile then branch
     for (Statement stmt : node.getThenBlock()) {
       compileStatement(stmt);
     }
 
-    // Jump to end (skip else)
-    emitJump(Opcode.JUMP, endLabel, lineNum);
+    if (hasElse) {
+      // Jump to end (skip else)
+      emitJump(Opcode.JUMP, endLabel, lineNum);
 
-    // Else branch
-    markLabel(elseLabel);
-    for (Statement stmt : node.getElseBlock()) {
-      compileStatement(stmt);
+      // Else branch
+      markLabel(elseLabel);
+      for (Statement stmt : elseBlock) {
+        compileStatement(stmt);
+      }
     }
 
     markLabel(endLabel);
@@ -309,10 +314,43 @@ public final class BytecodeCompiler {
     String funcName = id.getName();
     Location funcLocation = id.getStartLocation();
 
-    // Extract parameter names
-    List<String> paramNames = new ArrayList<>();
-    for (Parameter param : node.getParameters()) {
-      paramNames.add(param.getIdentifier().getName());
+    Resolver.Function resolvedFunc = node.getResolvedFunction();
+
+    // Extract parameter names from resolved function (includes *args/**kwargs names)
+    ImmutableList<String> paramNames = resolvedFunc != null
+        ? resolvedFunc.getParameterNames()
+        : extractParamNames(node.getParameters());
+
+    // Get function signature info
+    boolean hasVarargs = resolvedFunc != null && resolvedFunc.hasVarargs();
+    boolean hasKwargs = resolvedFunc != null && resolvedFunc.hasKwargs();
+    int numKeywordOnlyParams = resolvedFunc != null ? resolvedFunc.numKeywordOnlyParams() : 0;
+    int localCount = resolvedFunc != null ? resolvedFunc.getLocals().size() : paramNames.size();
+
+    // Compile default value expressions before MAKE_FUNCTION
+    // Default values are pushed onto the stack and consumed by MAKE_FUNCTION
+    List<Parameter> params = node.getParameters();
+    int numDefaults = 0;
+
+    // Count parameters excluding *args and **kwargs
+    int nparams = params.size() - (hasVarargs ? 1 : 0) - (hasKwargs ? 1 : 0);
+
+    // Find where defaults start and compile them
+    for (int i = 0; i < params.size(); i++) {
+      Parameter param = params.get(i);
+      // Skip *args and **kwargs - they don't have defaults
+      if (param instanceof Parameter.Star || param instanceof Parameter.StarStar) {
+        continue;
+      }
+      Expression defaultExpr = param.getDefaultValue();
+      if (defaultExpr != null) {
+        compileExpression(defaultExpr);
+        numDefaults++;
+      } else if (numDefaults > 0) {
+        // After seeing a default, all non-kwonly params must have defaults
+        // For required keyword-only params, push MANDATORY sentinel
+        // This is handled at runtime since MANDATORY is a runtime value
+      }
     }
 
     // Create a new compiler for the function body
@@ -320,9 +358,7 @@ public final class BytecodeCompiler {
     funcCompiler.builder.setParameterCount(paramNames.size());
 
     // Set local count and names from resolved function information
-    Resolver.Function resolvedFunc = node.getResolvedFunction();
     if (resolvedFunc != null) {
-      int localCount = resolvedFunc.getLocals().size();
       funcCompiler.builder.setLocalCount(localCount);
 
       // Add local variable names for better error messages
@@ -346,19 +382,34 @@ public final class BytecodeCompiler {
 
     BytecodeChunk funcChunk = funcCompiler.builder.build();
 
-    // Create function descriptor with all metadata
+    // Create function descriptor with all signature metadata
+    // Note: defaultValues will be collected at runtime from the stack
     FunctionDescriptor descriptor = new FunctionDescriptor(
         funcName,
         funcLocation,
         funcChunk,
-        com.google.common.collect.ImmutableList.copyOf(paramNames));
+        paramNames,
+        hasVarargs,
+        hasKwargs,
+        numKeywordOnlyParams,
+        ImmutableList.of(),  // defaults are on stack, collected at runtime
+        localCount);
 
-    // Store descriptor as constant and emit MAKE_FUNCTION
+    // Store descriptor as constant and emit MAKE_FUNCTION with default count
     int descriptorIndex = builder.addConstant(descriptor);
-    builder.emit(Opcode.MAKE_FUNCTION, descriptorIndex, lineNum);
+    // MAKE_FUNCTION takes descriptorIndex as operand1, numDefaults as operand2
+    builder.emit(Opcode.MAKE_FUNCTION, descriptorIndex, numDefaults, lineNum);
 
     // Store function in variable
     storeVariable(id);
+  }
+
+  private ImmutableList<String> extractParamNames(List<Parameter> params) {
+    List<String> names = new ArrayList<>();
+    for (Parameter param : params) {
+      names.add(param.getIdentifier().getName());
+    }
+    return ImmutableList.copyOf(names);
   }
 
   public void visit(ReturnStatement node) {
@@ -533,37 +584,100 @@ public final class BytecodeCompiler {
   public void visit(CallExpression node) {
     int lineNum = getLine(node);
 
-    // Compile function expression
-    compileExpression(node.getFunction());
-
-    // Compile positional arguments
-    int posArgCount = 0;
-    int kwArgCount = 0;
+    // Check if we have *args or **kwargs expansion
+    boolean hasStar = false;
     boolean hasStarStar = false;
-
     for (Argument arg : node.getArguments()) {
-      if (arg instanceof Argument.Positional) {
-        compileExpression(((Argument.Positional) arg).getValue());
-        posArgCount++;
-      } else if (arg instanceof Argument.Keyword) {
-        Argument.Keyword kwArg = (Argument.Keyword) arg;
-        int nameIndex = builder.addConstant(kwArg.getName());
-        builder.emit(Opcode.LOAD_CONST, nameIndex, lineNum);
-        compileExpression(kwArg.getValue());
-        kwArgCount++;
+      if (arg instanceof Argument.Star) {
+        hasStar = true;
       } else if (arg instanceof Argument.StarStar) {
-        // **kwargs - compile the dict expression
-        compileExpression(((Argument.StarStar) arg).getValue());
         hasStarStar = true;
       }
     }
 
-    // Emit call instruction
-    // If hasStarStar, we use a sentinel value in kwArgCount's high bit to indicate it
-    // This is a hack but avoids changing the Opcode signature
-    // We encode: if hasStarStar, kwArgCount |= 0x8000
-    int encodedKwArgCount = hasStarStar ? (kwArgCount | 0x8000) : kwArgCount;
-    builder.emit(Opcode.CALL, posArgCount, encodedKwArgCount, lineNum);
+    // Compile function expression
+    compileExpression(node.getFunction());
+
+    if (hasStar || hasStarStar) {
+      // Use CALL_EX for complex calls with *args or **kwargs
+      // Stack layout: [func, pos_list, star_arg_or_None, kw_dict, starstar_arg_or_None]
+
+      // Collect arguments by type
+      List<Expression> posArgs = new ArrayList<>();
+      Expression starArg = null;
+      List<Argument.Keyword> kwArgs = new ArrayList<>();
+      Expression starStarArg = null;
+
+      for (Argument arg : node.getArguments()) {
+        if (arg instanceof Argument.Positional) {
+          posArgs.add(((Argument.Positional) arg).getValue());
+        } else if (arg instanceof Argument.Star) {
+          if (starArg != null) {
+            throw new IllegalStateException("Multiple *args not supported");
+          }
+          starArg = ((Argument.Star) arg).getValue();
+        } else if (arg instanceof Argument.Keyword) {
+          kwArgs.add((Argument.Keyword) arg);
+        } else if (arg instanceof Argument.StarStar) {
+          if (starStarArg != null) {
+            throw new IllegalStateException("Multiple **kwargs not supported");
+          }
+          starStarArg = ((Argument.StarStar) arg).getValue();
+        }
+      }
+
+      // Build positional args as a list
+      for (Expression posArg : posArgs) {
+        compileExpression(posArg);
+      }
+      builder.emit(Opcode.BUILD_LIST, posArgs.size(), lineNum);
+
+      // Push *args value or None
+      if (starArg != null) {
+        compileExpression(starArg);
+      } else {
+        builder.emit(Opcode.LOAD_NONE, lineNum);
+      }
+
+      // Build keyword args as a dict
+      for (Argument.Keyword kwArg : kwArgs) {
+        int nameIndex = builder.addConstant(kwArg.getName());
+        builder.emit(Opcode.LOAD_CONST, nameIndex, lineNum);
+        compileExpression(kwArg.getValue());
+      }
+      builder.emit(Opcode.BUILD_DICT, kwArgs.size(), lineNum);
+
+      // Push **kwargs value or None
+      if (starStarArg != null) {
+        compileExpression(starStarArg);
+      } else {
+        builder.emit(Opcode.LOAD_NONE, lineNum);
+      }
+
+      // Flags encode what's on stack (for future optimization, not currently used)
+      int flags = (starArg != null ? 1 : 0) | (starStarArg != null ? 2 : 0);
+      builder.emit(Opcode.CALL_EX, flags, lineNum);
+
+    } else {
+      // Simple call without *args or **kwargs expansion
+      int posArgCount = 0;
+      int kwArgCount = 0;
+
+      for (Argument arg : node.getArguments()) {
+        if (arg instanceof Argument.Positional) {
+          compileExpression(((Argument.Positional) arg).getValue());
+          posArgCount++;
+        } else if (arg instanceof Argument.Keyword) {
+          Argument.Keyword kwArg = (Argument.Keyword) arg;
+          int nameIndex = builder.addConstant(kwArg.getName());
+          builder.emit(Opcode.LOAD_CONST, nameIndex, lineNum);
+          compileExpression(kwArg.getValue());
+          kwArgCount++;
+        }
+      }
+
+      builder.emit(Opcode.CALL, posArgCount, kwArgCount, lineNum);
+    }
   }
 
   public void visit(DotExpression node) {

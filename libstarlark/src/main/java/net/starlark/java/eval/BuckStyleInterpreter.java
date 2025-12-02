@@ -596,8 +596,28 @@ public final class BuckStyleInterpreter {
         // ===== Function Creation (Buck: NEW_FUNCTION) =====
         case MAKE_FUNCTION: {
           FunctionDescriptor desc = (FunctionDescriptor) code.getConstantPool().getConstant(instr.getOperand1());
+
+          // Get number of defaults from operand2
+          int numDefaults = instr.getOperand2();
+
+          // Pop default values from stack (in reverse order)
+          Object[] defaultsArray = new Object[numDefaults];
+          for (int i = numDefaults - 1; i >= 0; i--) {
+            defaultsArray[i] = pop();
+          }
+          Tuple defaultValues = Tuple.wrap(defaultsArray);
+
           BytecodeFunction fn = new BytecodeFunction(
-              desc.getName(), desc.getLocation(), desc.getChunk(), desc.getParameterNames(), filename);
+              desc.getName(),
+              desc.getLocation(),
+              desc.getChunk(),
+              desc.getParameterNames(),
+              desc.hasVarargs(),
+              desc.hasKwargs(),
+              desc.getNumKeywordOnlyParams(),
+              defaultValues,
+              desc.getLocalCount(),
+              filename);
           fn.setGlobals(globals);
           push(fn);
           break;
