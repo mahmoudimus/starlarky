@@ -896,8 +896,9 @@ public final class BytecodeCompiler {
       // Continue loop
       emitJump(Opcode.JUMP, continueLabel, lineNum);
 
-      // Loop done (FOR_ITER already popped the iterator when jumping here)
+      // Loop done - pop iterator and remove iteration lock
       markLabel(breakLabel);
+      builder.emit(Opcode.END_FOR, lineNum);
 
     } else if (clause instanceof Comprehension.If) {
       Comprehension.If ifClause = (Comprehension.If) clause;
