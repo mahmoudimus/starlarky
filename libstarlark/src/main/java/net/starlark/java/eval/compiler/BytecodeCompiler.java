@@ -339,7 +339,7 @@ public final class BytecodeCompiler {
 
     // Loop end
     markLabel(breakLabel);
-    builder.emit(Opcode.POP, lineNum); // Pop iterator
+    builder.emit(Opcode.END_FOR, lineNum); // Pop iterator and remove iteration lock
 
     // Patch break statements
     for (int breakInstr : bc.breakInstructions) {
