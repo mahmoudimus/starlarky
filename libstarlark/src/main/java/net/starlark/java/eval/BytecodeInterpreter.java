@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import net.starlark.java.eval.compiler.*;
@@ -357,7 +358,8 @@ public final class BytecodeInterpreter {
             String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
             Object value = globals.get(name);
             if (value == null) {
-              throw Starlark.errorf("name '%s' is not defined", name);
+              throw Starlark.errorf(
+                  "global variable '%s' is referenced before assignment.", name);
             }
             push(value);
           }
@@ -627,7 +629,7 @@ public final class BytecodeInterpreter {
                 throw Starlark.errorf(
                     "argument after ** must be a dict, not '%s'", Starlark.type(starStarObj));
               }
-              starStarDict = new HashMap<>();
+              starStarDict = new LinkedHashMap<>();
               for (Map.Entry<?, ?> entry : ((Dict<?, ?>) starStarObj).entrySet()) {
                 if (!(entry.getKey() instanceof String)) {
                   throw Starlark.errorf(
@@ -638,7 +640,7 @@ public final class BytecodeInterpreter {
             }
 
             // Collect keyword arguments into a Map
-            Map<String, Object> kwargs = new HashMap<>();
+            Map<String, Object> kwargs = new LinkedHashMap<>();
             for (int i = 0; i < kwArgs; i++) {
               Object value = pop();
               Object name = pop();
@@ -755,7 +757,7 @@ public final class BytecodeInterpreter {
             }
 
             // Build keyword arguments map
-            Map<String, Object> kwargs = new HashMap<>();
+            Map<String, Object> kwargs = new LinkedHashMap<>();
 
             // Add explicit keyword args
             if (kwDictObj instanceof Dict) {
@@ -984,8 +986,8 @@ public final class BytecodeInterpreter {
       return Starlark.NONE;
 
     } catch (EvalException ex) {
-      // Re-throw EvalException as-is
-      throw ex;
+      // Set error location and re-throw
+      throw withLocation(ex);
     } catch (InterruptedException ex) {
       // Re-throw InterruptedException as-is (don't wrap it)
       throw ex;

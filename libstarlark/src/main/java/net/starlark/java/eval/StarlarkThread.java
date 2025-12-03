@@ -430,6 +430,21 @@ public final class StarlarkThread {
     return false;
   }
 
+  /** Reports whether {@code fn} has been recursively reentered within this thread. */
+  boolean isRecursiveCall(BytecodeFunction fn) {
+    // Find fn buried within stack. (The top of the stack is assumed to be fn.)
+    for (int i = callstack.size() - 2; i >= 0; --i) {
+      Frame fr = callstack.get(i);
+      // We compare code (bytecode chunk), not closure values, otherwise one can defeat the
+      // check by writing the Y combinator.
+      if (fr.fn instanceof BytecodeFunction
+          && ((BytecodeFunction) fr.fn).getChunk().equals(fn.getChunk())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * Returns the location of the program counter in the enclosing call frame. If called from within
    * a built-in function, this is the location of the call expression that called the built-in. It

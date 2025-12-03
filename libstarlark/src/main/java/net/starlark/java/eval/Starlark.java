@@ -316,7 +316,7 @@ public final class Starlark {
       return "dict";
     } else if (c.equals(NoneType.class)) {
       return "NoneType";
-    } else if (c.equals(StarlarkFunction.class)) {
+    } else if (c.equals(StarlarkFunction.class) || c.equals(BytecodeFunction.class)) {
       return "function";
     } else if (c.equals(RangeList.class)) {
       return "range";

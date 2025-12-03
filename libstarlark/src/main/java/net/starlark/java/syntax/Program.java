@@ -134,6 +134,36 @@ public final class Program {
   }
 
   /**
+   * Resolves a file syntax tree and compiles it to a Program with explicit bytecode control.
+   *
+   * @param file the file to compile
+   * @param env the resolver module
+   * @param enableBytecode whether to compile to bytecode
+   * @throws SyntaxError.Exception in case of resolution error
+   */
+  public static Program compileFile(StarlarkFile file, Resolver.Module env, boolean enableBytecode)
+      throws SyntaxError.Exception {
+    Resolver.resolveFile(file, env);
+    if (!file.ok()) {
+      throw new SyntaxError.Exception(file.errors());
+    }
+
+    // Extract load statements.
+    ImmutableList.Builder<String> loads = ImmutableList.builder();
+    ImmutableList.Builder<Location> loadLocations = ImmutableList.builder();
+    for (Statement stmt : file.getStatements()) {
+      if (stmt instanceof LoadStatement) {
+        LoadStatement load = (LoadStatement) stmt;
+        String module = load.getImport().getValue();
+        loads.add(module);
+        loadLocations.add(load.getImport().getLocation());
+      }
+    }
+
+    return new Program(file.getResolvedFunction(), loads.build(), loadLocations.build(), enableBytecode);
+  }
+
+  /**
    * Resolves an expression syntax tree in the specified environment and compiles it to a Program.
    * This operation mutates the syntax tree. The {@code options} must match those used when parsing
    * expression.
