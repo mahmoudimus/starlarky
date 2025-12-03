@@ -60,6 +60,8 @@ public final class BytecodeCompiler {
     }
   }
 
+  private int labelCounter = 0;
+
   private BytecodeCompiler(String name) {
     this.builder = new BytecodeChunk.Builder(name);
     this.labelOffsets = new HashMap<>();
@@ -1073,7 +1075,7 @@ public final class BytecodeCompiler {
   }
 
   private String newLabel(String prefix) {
-    return prefix + "_" + labelOffsets.size();
+    return prefix + "_" + (labelCounter++);
   }
 
   private void markLabel(String label) {
