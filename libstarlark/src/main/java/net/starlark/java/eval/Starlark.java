@@ -885,6 +885,65 @@ public final class Starlark {
    */
   public static Object execFileProgram(Program prog, Module module, StarlarkThread thread)
       throws EvalException, InterruptedException {
+    // Use bytecode interpreter if bytecode is available
+    if (prog.hasBytecode()) {
+      // Create mutable copy of globals including predeclared bindings
+      java.util.HashMap<String, Object> globals = new java.util.HashMap<>();
+
+      // Add Starlark universe (built-in functions like int, str, etc.)
+      globals.putAll(Starlark.UNIVERSE);
+
+      // Add module-specific predeclared bindings
+      globals.putAll(module.getPredeclaredBindings());
+
+      // Add current globals
+      globals.putAll(module.getGlobals());
+
+      Object result;
+      try {
+        result = BytecodeInterpreter.execute(
+            prog.getBytecode(),
+            thread,
+            globals,
+            prog.getFilename());
+        if (Boolean.getBoolean("debug.globals")) {
+          System.out.println("Bytecode execution completed successfully. Result: " + result);
+        }
+      } catch (Exception e) {
+        if (Boolean.getBoolean("debug.globals")) {
+          System.out.println("Bytecode execution failed: " + e.getMessage());
+          e.printStackTrace();
+        }
+        throw e;
+      }
+
+      // Write back ALL globals to module (skip predeclared/universe)
+      ImmutableMap<String, Object> predeclared = module.getPredeclaredBindings();
+      if (Boolean.getBoolean("debug.globals")) {
+        System.out.println("Writing back globals to module:");
+        for (String name : globals.keySet()) {
+          boolean isUniverse = Starlark.UNIVERSE.containsKey(name);
+          boolean isPredeclared = predeclared.containsKey(name);
+          System.out.println("  " + name + ": " + globals.get(name) +
+              (isUniverse ? " [UNIVERSE]" : "") + (isPredeclared ? " [PREDECLARED]" : ""));
+        }
+      }
+      for (Map.Entry<String, Object> entry : globals.entrySet()) {
+        String name = entry.getKey();
+        Object value = entry.getValue();
+        // Skip universe and predeclared bindings
+        if (!Starlark.UNIVERSE.containsKey(name) && !predeclared.containsKey(name)) {
+          if (Boolean.getBoolean("debug.globals")) {
+            System.out.println("  -> Setting module global: " + name + " = " + value);
+          }
+          module.setGlobal(name, value);
+        }
+      }
+
+      return result;
+    }
+
+    // Fall back to tree-walking interpreter
     Resolver.Function rfn = prog.getResolvedFunction();
 
     // A given Module may be passed to execFileProgram multiple times in sequence,
