@@ -539,6 +539,7 @@ public final class BytecodeCompiler {
     // Compile positional arguments
     int posArgCount = 0;
     int kwArgCount = 0;
+    boolean hasStarStar = false;
 
     for (Argument arg : node.getArguments()) {
       if (arg instanceof Argument.Positional) {
@@ -550,11 +551,19 @@ public final class BytecodeCompiler {
         builder.emit(Opcode.LOAD_CONST, nameIndex, lineNum);
         compileExpression(kwArg.getValue());
         kwArgCount++;
+      } else if (arg instanceof Argument.StarStar) {
+        // **kwargs - compile the dict expression
+        compileExpression(((Argument.StarStar) arg).getValue());
+        hasStarStar = true;
       }
     }
 
     // Emit call instruction
-    builder.emit(Opcode.CALL, posArgCount, kwArgCount, lineNum);
+    // If hasStarStar, we use a sentinel value in kwArgCount's high bit to indicate it
+    // This is a hack but avoids changing the Opcode signature
+    // We encode: if hasStarStar, kwArgCount |= 0x8000
+    int encodedKwArgCount = hasStarStar ? (kwArgCount | 0x8000) : kwArgCount;
+    builder.emit(Opcode.CALL, posArgCount, encodedKwArgCount, lineNum);
   }
 
   public void visit(DotExpression node) {

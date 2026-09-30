@@ -578,14 +578,76 @@ public final class BytecodeInterpreter {
         case CALL:
           {
             int posArgs = instr.getOperand1();
-            int kwArgs = instr.getOperand2();
+            int encodedKwArgs = instr.getOperand2();
+
+            // Decode hasStarStar flag from high bit
+            boolean hasStarStar = (encodedKwArgs & 0x8000) != 0;
+            int kwArgs = encodedKwArgs & 0x7FFF;
+
+            // If hasStarStar, pop the **kwargs dict first
+            Map<String, Object> starStarDict = null;
+            if (hasStarStar) {
+              Object starStarObj = pop();
+              if (!(starStarObj instanceof Dict)) {
+                throw Starlark.errorf(
+                    "argument after ** must be a dict, not '%s'", Starlark.type(starStarObj));
+              }
+              starStarDict = new HashMap<>();
+              for (Map.Entry<?, ?> entry : ((Dict<?, ?>) starStarObj).entrySet()) {
+                if (!(entry.getKey() instanceof String)) {
+                  throw Starlark.errorf(
+                      "keywords must be strings, not '%s'", Starlark.type(entry.getKey()));
+                }
+                starStarDict.put((String) entry.getKey(), entry.getValue());
+              }
+            }
 
             // Collect keyword arguments into a Map
             Map<String, Object> kwargs = new HashMap<>();
             for (int i = 0; i < kwArgs; i++) {
               Object value = pop();
               Object name = pop();
-              kwargs.put((String) name, value);
+              String key = (String) name;
+
+              // Check for duplicate with existing keyword arg
+              if (kwargs.containsKey(key)) {
+                throw Starlark.errorf("got multiple values for argument '%s'", key);
+              }
+              kwargs.put(key, value);
+            }
+
+            // Merge **kwargs dict, checking for duplicates
+            // Get function name before popping for better error messages
+            // Stack layout: [..., function, posarg1, ..., posargN]
+            // Function is at stack position: stack.size() - posArgs - 1
+            Object function = null;
+            if (starStarDict != null && posArgs < stack.size()) {
+              int functionIndex = stack.size() - posArgs - 1;
+              if (functionIndex >= 0) {
+                function = stack.get(functionIndex);
+              }
+            }
+
+            if (starStarDict != null) {
+              for (Map.Entry<String, Object> entry : starStarDict.entrySet()) {
+                String key = entry.getKey();
+                if (kwargs.containsKey(key)) {
+                  // Generate error message with function name if available
+                  if (function != null) {
+                    String funcName = Starlark.repr(function);
+                    // Extract just the function name from repr (e.g., "<built-in function int>" -> "int()")
+                    if (funcName.contains("function ")) {
+                      String name = funcName.substring(funcName.indexOf("function ") + 9);
+                      if (name.endsWith(">")) {
+                        name = name.substring(0, name.length() - 1);
+                      }
+                      throw Starlark.errorf("%s() got multiple values for argument '%s'", name, key);
+                    }
+                  }
+                  throw Starlark.errorf("got multiple values for argument '%s'", key);
+                }
+                kwargs.put(key, entry.getValue());
+              }
             }
 
             // Collect positional arguments into a List
@@ -594,7 +656,12 @@ public final class BytecodeInterpreter {
               posArgList.add(0, pop()); // Add at front to reverse order
             }
 
-            Object function = pop();
+            // Pop the function (reusing variable if already extracted for error messages)
+            if (function == null) {
+              function = pop();
+            } else {
+              pop(); // Discard, we already have it
+            }
 
             // Call the function with positional and keyword arguments
             Object result = Starlark.call(thread, function, posArgList, kwargs);
