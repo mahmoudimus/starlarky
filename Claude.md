@@ -6,7 +6,7 @@ Implementing a bytecode compilation and execution system for Starlark as an alte
 
 **Branch:** `claude/multi-backend-compilation-015oF9gXw953BieDzsJgaAoC`
 
-**Current Status:** 50/60 tests passing (83%) ⬆️ +3 from error messages & call stack support!
+**Current Status:** 56/60 tests passing (93%) ⬆️ +2 from LOAD_MODULE implementation!
 
 ## Architecture
 
@@ -439,7 +439,15 @@ Key differences:
 ## Goal
 
 **Target:** 60/60 tests passing (100%)
-**Current:** 39/60 tests passing (65%)
-**Remaining:** 21 tests to fix
+**Current:** 56/60 tests passing (93%)
+**Remaining:** 4 tests
 
-The low-hanging fruit (interrupt handling + mutation tracking) could get us to ~47/60 (78%) quickly.
+### Remaining Failures:
+1. **Comprehension validation (3 tests)** - Need column number support in bytecode
+   - testListComprehensionFailsOnNonSequence
+   - testListComprehensionOnStringIsForbidden
+   - testDictComprehensionOnNonIterable
+   - All have correct error messages and line numbers, but expect specific columns (e.g., expected 17, got 0)
+
+2. **Keyword arguments unpacking (1 test)** - Not yet implemented
+   - testDictKeysDuplicateKeyArgs - Requires **kwargs unpacking support

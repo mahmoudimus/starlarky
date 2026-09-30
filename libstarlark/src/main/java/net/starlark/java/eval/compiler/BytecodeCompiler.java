@@ -400,11 +400,27 @@ public final class BytecodeCompiler {
   }
 
   public void visit(LoadStatement node) {
-    // Load statements are typically handled at module initialization
-    // For now, emit a placeholder
     int lineNum = getLine(node);
+
+    // Load the module - this pushes the Module object onto the stack
     int moduleIndex = builder.addConstant(node.getImport().getValue());
     builder.emit(Opcode.LOAD_MODULE, moduleIndex, lineNum);
+
+    // For each binding, extract the symbol from the module and store it
+    for (LoadStatement.Binding binding : node.getBindings()) {
+      // Duplicate the module on stack (since LOAD_ATTR will consume it)
+      builder.emit(Opcode.DUP, lineNum);
+
+      // Get the symbol from the module
+      int symbolIndex = builder.addConstant(binding.getOriginalName().getName());
+      builder.emit(Opcode.LOAD_ATTR, symbolIndex, lineNum);
+
+      // Store it to the appropriate variable (local or global based on FileOptions)
+      storeVariable(binding.getLocalName());
+    }
+
+    // Pop the module from stack
+    builder.emit(Opcode.POP, lineNum);
   }
 
   // Expression visitors
