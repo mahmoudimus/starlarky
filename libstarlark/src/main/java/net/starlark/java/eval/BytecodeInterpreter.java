@@ -100,8 +100,18 @@ public final class BytecodeInterpreter {
   public static Object execute(
       BytecodeChunk chunk, StarlarkThread thread, Map<String, Object> globals, String filename)
       throws EvalException, InterruptedException {
-    BytecodeInterpreter interpreter = new BytecodeInterpreter(chunk, thread, globals, filename);
-    return interpreter.run();
+    // Create a synthetic callable for the module-level code
+    StarlarkCallable moduleCallable = new ModuleCallable(chunk.getName(), filename);
+
+    thread.push(moduleCallable);
+    try {
+      BytecodeInterpreter interpreter = new BytecodeInterpreter(chunk, thread, globals, filename);
+      return interpreter.run();
+    } catch (EvalException ex) {
+      throw ex.ensureStack(thread);
+    } finally {
+      thread.pop();
+    }
   }
 
   /**
@@ -166,8 +176,12 @@ public final class BytecodeInterpreter {
    * Wraps an exception with location information from the current instruction.
    */
   private EvalException withLocation(EvalException ex) {
+    // Set the error location in the current frame
+    if (!thread.getCallStack().isEmpty()) {
+      thread.frame(0).setErrorLocation(currentLocation());
+    }
     // The exception will get the full call stack from the thread when it propagates
-    return ex;
+    return ex.ensureStack(thread);
   }
 
   /**
@@ -600,11 +614,16 @@ public final class BytecodeInterpreter {
 
             // Check if strings are forbidden in this context (comprehensions)
             if (iterable instanceof String) {
-              throw Starlark.errorf("type 'string' is not iterable");
+              throw withLocation(new EvalException("type 'string' is not iterable"));
             }
 
             // toIterable() will throw an error if the object is not iterable
-            Iterable<?> starlarkIterable = Starlark.toIterable(iterable);
+            Iterable<?> starlarkIterable;
+            try {
+              starlarkIterable = Starlark.toIterable(iterable);
+            } catch (EvalException e) {
+              throw withLocation(e);
+            }
             Iterator<?> iterator = starlarkIterable.iterator();
             // Track mutations on the iterable during iteration
             EvalUtils.addIterator(iterable);
@@ -754,5 +773,36 @@ public final class BytecodeInterpreter {
   @FunctionalInterface
   private interface UnaryOperation {
     Object apply(Object a) throws EvalException;
+  }
+
+  /**
+   * A minimal StarlarkCallable implementation for module-level code.
+   * This is used to provide a call stack frame for top-level bytecode execution.
+   */
+  private static class ModuleCallable implements StarlarkCallable {
+    private final String name;
+    private final Location location;
+
+    ModuleCallable(String name, String filename) {
+      this.name = name != null ? name : "<toplevel>";
+      this.location = filename != null
+          ? Location.fromFileLineColumn(filename, 0, 0)
+          : Location.BUILTIN;
+    }
+
+    @Override
+    public String getName() {
+      return name;
+    }
+
+    @Override
+    public Location getLocation() {
+      return location;
+    }
+
+    @Override
+    public Object call(StarlarkThread thread, Tuple args, Dict<String, Object> kwargs) {
+      throw new UnsupportedOperationException("ModuleCallable should not be called directly");
+    }
   }
 }
