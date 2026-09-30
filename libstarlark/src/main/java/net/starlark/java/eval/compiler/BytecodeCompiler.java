@@ -595,12 +595,13 @@ public final class BytecodeCompiler {
     }
 
     // The result collection is now on top of stack
-    // We need to keep it there throughout the comprehension
     // Compile nested loops and conditionals
-    compileClauses(node, 0);
+    // loopDepth tracks how many iterators are on stack above the result
+    compileClauses(node, 0, 0);
   }
 
-  private void compileClauses(Comprehension comp, int clauseIndex) {
+  // stackDepth is the number of items between TOS and the result collection
+  private void compileClauses(Comprehension comp, int clauseIndex, int stackDepth) {
     if (clauseIndex >= comp.getClauses().size()) {
       // Base case: evaluate body and add to result
       if (comp.isDict()) {
@@ -611,9 +612,10 @@ public final class BytecodeCompiler {
         compileExpression(body.getKey());
         compileExpression(body.getValue());
 
-        // Stack: [result_dict, key, value]
-        // DICT_ADD pops key and value, adds to dict at stack[-3]
-        builder.emit(Opcode.DICT_ADD, 1, getLine(comp));
+        // Stack: [result_dict, ...iterators..., key, value]
+        // DICT_ADD pops key and value, adds to dict at stack[-(stackDepth+2)]
+        // stackDepth accounts for iterators, +2 for key and value
+        builder.emit(Opcode.DICT_ADD, stackDepth + 3, getLine(comp));
       } else {
         // List comprehension: [expr for ...]
         Expression body = (Expression) comp.getBody();
@@ -621,9 +623,10 @@ public final class BytecodeCompiler {
         // Compile body expression
         compileExpression(body);
 
-        // Stack: [result_list, value]
-        // LIST_APPEND pops value, appends to list at stack[-2]
-        builder.emit(Opcode.LIST_APPEND, 1, getLine(comp));
+        // Stack: [result_list, ...iterators..., value]
+        // LIST_APPEND pops value, appends to list at stack[-(stackDepth+1)]
+        // stackDepth accounts for iterators, +1 for the value itself
+        builder.emit(Opcode.LIST_APPEND, stackDepth + 2, getLine(comp));
       }
       return;
     }
@@ -638,7 +641,7 @@ public final class BytecodeCompiler {
       // Compile iterable expression
       compileExpression(forClause.getIterable());
 
-      // Get iterator
+      // Get iterator - this adds 1 to stack depth
       builder.emit(Opcode.GET_ITER, lineNum);
 
       // Start of loop
@@ -650,11 +653,11 @@ public final class BytecodeCompiler {
       // Try to get next value - FOR_ITER jumps to breakLabel when done
       emitJump(Opcode.FOR_ITER, breakLabel, lineNum);
 
-      // Assign loop variable
+      // Assign loop variable (pops value from stack)
       compileLValue(forClause.getVars());
 
-      // Process remaining clauses (recursively)
-      compileClauses(comp, clauseIndex + 1);
+      // Process remaining clauses with increased stack depth (iterator added)
+      compileClauses(comp, clauseIndex + 1, stackDepth + 1);
 
       // Continue loop
       emitJump(Opcode.JUMP, continueLabel, lineNum);
@@ -674,8 +677,8 @@ public final class BytecodeCompiler {
       String skipLabel = newLabel("comp_if_skip");
       emitJump(Opcode.POP_JUMP_IF_FALSE, skipLabel, lineNum);
 
-      // Process remaining clauses
-      compileClauses(comp, clauseIndex + 1);
+      // Process remaining clauses (no stack depth change)
+      compileClauses(comp, clauseIndex + 1, stackDepth);
 
       markLabel(skipLabel);
     }
@@ -854,8 +857,8 @@ public final class BytecodeCompiler {
     if (targetOffset == null) {
       throw new IllegalStateException("Undefined label: " + targetLabel);
     }
-    // Note: This is a simplified patch - in practice, we'd need to modify
-    // the instruction's operand to point to the target offset
+    // Update the jump instruction's operand to point to the target instruction
+    builder.updateInstructionOperand(instructionIndex, targetOffset);
   }
 
   private void patchJumps() {
