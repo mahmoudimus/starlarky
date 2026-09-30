@@ -14,6 +14,7 @@
 
 package net.starlark.java.eval;
 
+import com.google.common.collect.ImmutableList;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -71,10 +72,20 @@ public final class BytecodeInterpreter {
   private final List<Object> stack;
   private final String filename;
   private final Map<Iterator<?>, Object> iteratorToIterable; // Track iterables for mutation checking
+  private final Tuple freevars; // Free variables (cells from enclosing functions)
   private int ip; // Instruction pointer
 
   private BytecodeInterpreter(
       BytecodeChunk chunk, StarlarkThread thread, Map<String, Object> globals, String filename) {
+    this(chunk, thread, globals, filename, Tuple.empty());
+  }
+
+  private BytecodeInterpreter(
+      BytecodeChunk chunk,
+      StarlarkThread thread,
+      Map<String, Object> globals,
+      String filename,
+      Tuple freevars) {
     this.chunk = chunk;
     this.thread = thread;
     this.locals = new Object[chunk.getLocalCount()];
@@ -82,6 +93,7 @@ public final class BytecodeInterpreter {
     this.stack = new ArrayList<>();
     this.filename = filename != null ? filename : "<bytecode>";
     this.iteratorToIterable = new HashMap<>();
+    this.freevars = freevars != null ? freevars : Tuple.empty();
     this.ip = 0;
   }
 
@@ -199,7 +211,37 @@ public final class BytecodeInterpreter {
       Map<String, Object> globals,
       String filename)
       throws EvalException, InterruptedException {
-    BytecodeInterpreter interpreter = new BytecodeInterpreter(chunk, thread, globals, filename);
+    return executeWithLocals(chunk, thread, locals, globals, filename, Tuple.empty());
+  }
+
+  /**
+   * Executes a bytecode chunk with pre-processed local variables and free variables.
+   *
+   * <p>This is used by BytecodeFunction.fastcall() after argument processing has been done.
+   * The locals array contains the fully resolved parameter values including defaults,
+   * *args tuple, and **kwargs dict as appropriate. The freevars tuple contains cells
+   * captured from enclosing functions for closures.
+   *
+   * @param chunk the bytecode to execute
+   * @param thread the Starlark thread context
+   * @param locals the pre-processed local variable values
+   * @param globals the global variable namespace
+   * @param filename the source filename for error reporting
+   * @param freevars the captured free variables (cells) from enclosing functions
+   * @return the result of execution
+   * @throws EvalException if execution fails
+   * @throws InterruptedException if execution is interrupted
+   */
+  public static Object executeWithLocals(
+      BytecodeChunk chunk,
+      StarlarkThread thread,
+      Object[] locals,
+      Map<String, Object> globals,
+      String filename,
+      Tuple freevars)
+      throws EvalException, InterruptedException {
+    BytecodeInterpreter interpreter =
+        new BytecodeInterpreter(chunk, thread, globals, filename, freevars);
 
     // Copy pre-processed locals directly
     int localCount = Math.min(locals.length, interpreter.locals.length);
@@ -373,12 +415,40 @@ public final class BytecodeInterpreter {
           break;
 
         case LOAD_FREE:
-          // TODO: Implement closure variable loading
-          throw new UnsupportedOperationException("Free variables not yet implemented");
+          {
+            // LOAD_FREE loads a value from a captured free variable (closure cell)
+            int index = instr.getOperand1();
+            BytecodeFunction.Cell cell = (BytecodeFunction.Cell) freevars.get(index);
+            push(cell.x);
+          }
+          break;
 
         case STORE_FREE:
-          // TODO: Implement closure variable storage
-          throw new UnsupportedOperationException("Free variables not yet implemented");
+          {
+            // STORE_FREE stores a value into a captured free variable (closure cell)
+            int index = instr.getOperand1();
+            BytecodeFunction.Cell cell = (BytecodeFunction.Cell) freevars.get(index);
+            cell.x = pop();
+          }
+          break;
+
+        case LOAD_CELL:
+          {
+            // LOAD_CELL loads a value from a cell in locals (for CELL scope variables)
+            int index = instr.getOperand1();
+            BytecodeFunction.Cell cell = (BytecodeFunction.Cell) locals[index];
+            push(cell.x);
+          }
+          break;
+
+        case STORE_CELL:
+          {
+            // STORE_CELL stores a value into a cell in locals (for CELL scope variables)
+            int index = instr.getOperand1();
+            BytecodeFunction.Cell cell = (BytecodeFunction.Cell) locals[index];
+            cell.x = pop();
+          }
+          break;
 
         // Arithmetic
         case ADD:
@@ -948,6 +1018,34 @@ public final class BytecodeInterpreter {
 
             // Set globals so the function can access them when called
             function.setGlobals(globals);
+
+            // Set cell indices so the function knows which locals to wrap in Cells
+            function.setCellIndices(descriptor.getCellIndices());
+
+            // Capture free variables for closures
+            ImmutableList<FunctionDescriptor.FreevarInfo> freevarInfos = descriptor.getFreevarInfos();
+            if (!freevarInfos.isEmpty()) {
+              Object[] capturedCells = new Object[freevarInfos.size()];
+              for (int i = 0; i < freevarInfos.size(); i++) {
+                FunctionDescriptor.FreevarInfo info = freevarInfos.get(i);
+                if (info.isFromEnclosingFreevars) {
+                  // Get from enclosing function's freevars
+                  capturedCells[i] = freevars.get(info.index);
+                } else {
+                  // Get from current locals (it should be a Cell)
+                  Object local = locals[info.index];
+                  if (local instanceof BytecodeFunction.Cell) {
+                    capturedCells[i] = local;
+                  } else {
+                    // Create a new cell wrapping the value
+                    capturedCells[i] = new BytecodeFunction.Cell(local);
+                    // Also update locals so subsequent access sees the cell
+                    locals[info.index] = capturedCells[i];
+                  }
+                }
+              }
+              function.setFreevars(Tuple.wrap(capturedCells));
+            }
 
             push(function);
           }

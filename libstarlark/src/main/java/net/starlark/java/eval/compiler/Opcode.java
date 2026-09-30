@@ -39,8 +39,10 @@ public enum Opcode {
   STORE_LOCAL(1),   // Store to local variable (operand: slot index)
   LOAD_GLOBAL(1),   // Load global variable (operand: name index)
   STORE_GLOBAL(1),  // Store to global variable (operand: name index)
-  LOAD_FREE(1),     // Load free variable from closure (operand: index)
-  STORE_FREE(1),    // Store to free variable (operand: index)
+  LOAD_FREE(1),     // Load free variable from closure's freevars tuple (operand: index)
+  STORE_FREE(1),    // Store to free variable in closure's freevars tuple (operand: index)
+  LOAD_CELL(1),     // Load from cell in locals (operand: local slot index)
+  STORE_CELL(1),    // Store to cell in locals (operand: local slot index)
 
   // Arithmetic operations
   ADD(0),           // Binary +

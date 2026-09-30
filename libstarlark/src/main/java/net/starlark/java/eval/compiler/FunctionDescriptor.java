@@ -43,6 +43,28 @@ public final class FunctionDescriptor {
   private final int localCount;
 
   /**
+   * Information about a free variable that needs to be captured.
+   * Used during MAKE_FUNCTION to build the function's freevars tuple.
+   */
+  public static final class FreevarInfo {
+    /** The scope where the variable is found (FREE = from enclosing function's freevars, CELL = from current locals) */
+    public final boolean isFromEnclosingFreevars; // true if FREE scope, false if CELL scope
+    /** Index into the source (enclosing freevars or current locals) */
+    public final int index;
+
+    public FreevarInfo(boolean isFromEnclosingFreevars, int index) {
+      this.isFromEnclosingFreevars = isFromEnclosingFreevars;
+      this.index = index;
+    }
+  }
+
+  // Information about free variables to capture (for closures)
+  private final ImmutableList<FreevarInfo> freevarInfos;
+
+  // Indices of local variables that need to be wrapped in Cells (shared with nested functions)
+  private final ImmutableList<Integer> cellIndices;
+
+  /**
    * Creates a simple function descriptor with no special parameters.
    * This constructor is kept for backward compatibility.
    */
@@ -56,7 +78,9 @@ public final class FunctionDescriptor {
         /*hasKwargs=*/ false,
         /*numKeywordOnlyParams=*/ 0,
         /*defaultValues=*/ ImmutableList.of(),
-        /*localCount=*/ parameterNames.size());
+        /*localCount=*/ parameterNames.size(),
+        /*freevarInfos=*/ ImmutableList.of(),
+        /*cellIndices=*/ ImmutableList.of());
   }
 
   /**
@@ -82,6 +106,66 @@ public final class FunctionDescriptor {
       int numKeywordOnlyParams,
       ImmutableList<Object> defaultValues,
       int localCount) {
+    this(name, location, chunk, parameterNames, hasVarargs, hasKwargs,
+        numKeywordOnlyParams, defaultValues, localCount, ImmutableList.of(), ImmutableList.of());
+  }
+
+  /**
+   * Creates a full function descriptor with all signature information including closure support.
+   *
+   * @param name the function name
+   * @param location the source location
+   * @param chunk the compiled bytecode
+   * @param parameterNames all parameter names including *args/**kwargs names if present
+   * @param hasVarargs whether the function has *args
+   * @param hasKwargs whether the function has **kwargs
+   * @param numKeywordOnlyParams number of keyword-only parameters (after *args or *)
+   * @param defaultValues default values for optional parameters
+   * @param localCount total number of local variables (including parameters)
+   * @param freevarInfos information about free variables to capture for closures
+   */
+  public FunctionDescriptor(
+      String name,
+      Location location,
+      BytecodeChunk chunk,
+      ImmutableList<String> parameterNames,
+      boolean hasVarargs,
+      boolean hasKwargs,
+      int numKeywordOnlyParams,
+      ImmutableList<Object> defaultValues,
+      int localCount,
+      ImmutableList<FreevarInfo> freevarInfos) {
+    this(name, location, chunk, parameterNames, hasVarargs, hasKwargs,
+        numKeywordOnlyParams, defaultValues, localCount, freevarInfos, ImmutableList.of());
+  }
+
+  /**
+   * Creates a full function descriptor with all signature information including closure support.
+   *
+   * @param name the function name
+   * @param location the source location
+   * @param chunk the compiled bytecode
+   * @param parameterNames all parameter names including *args/**kwargs names if present
+   * @param hasVarargs whether the function has *args
+   * @param hasKwargs whether the function has **kwargs
+   * @param numKeywordOnlyParams number of keyword-only parameters (after *args or *)
+   * @param defaultValues default values for optional parameters
+   * @param localCount total number of local variables (including parameters)
+   * @param freevarInfos information about free variables to capture for closures
+   * @param cellIndices indices of locals that should be wrapped in Cells
+   */
+  public FunctionDescriptor(
+      String name,
+      Location location,
+      BytecodeChunk chunk,
+      ImmutableList<String> parameterNames,
+      boolean hasVarargs,
+      boolean hasKwargs,
+      int numKeywordOnlyParams,
+      ImmutableList<Object> defaultValues,
+      int localCount,
+      ImmutableList<FreevarInfo> freevarInfos,
+      ImmutableList<Integer> cellIndices) {
     this.name = name;
     this.location = location;
     this.chunk = chunk;
@@ -91,6 +175,8 @@ public final class FunctionDescriptor {
     this.numKeywordOnlyParams = numKeywordOnlyParams;
     this.defaultValues = defaultValues;
     this.localCount = localCount;
+    this.freevarInfos = freevarInfos;
+    this.cellIndices = cellIndices;
   }
 
   public String getName() {
@@ -142,5 +228,21 @@ public final class FunctionDescriptor {
    */
   public int getLocalCount() {
     return localCount;
+  }
+
+  /**
+   * Returns the information about free variables to capture.
+   * Used during MAKE_FUNCTION to build the closure.
+   */
+  public ImmutableList<FreevarInfo> getFreevarInfos() {
+    return freevarInfos;
+  }
+
+  /**
+   * Returns the indices of local variables that need to be wrapped in Cells.
+   * These are locals that are shared with nested functions.
+   */
+  public ImmutableList<Integer> getCellIndices() {
+    return cellIndices;
   }
 }

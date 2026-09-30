@@ -53,6 +53,26 @@ public final class BytecodeFunction implements UserDefinedFunction {
   // Captured globals from function definition
   private Map<String, Object> globals;
 
+  // Captured free variables (cells from enclosing functions).
+  // Indexed by LOAD_FREE/STORE_FREE operands.
+  private Tuple freevars;
+
+  // Indices of locals that need to be wrapped in Cells at function entry.
+  // These are variables shared with nested functions.
+  private ImmutableList<Integer> cellIndices = ImmutableList.of();
+
+  /**
+   * A Cell is a local variable shared between an inner and an outer function.
+   * It wraps a value that can be modified through the closure.
+   */
+  public static final class Cell implements StarlarkValue {
+    public Object x;
+
+    public Cell(Object x) {
+      this.x = x;
+    }
+  }
+
   /**
    * Sentinel value indicating a required parameter in the defaultValues tuple.
    * This mirrors StarlarkFunction.MANDATORY.
@@ -181,6 +201,34 @@ public final class BytecodeFunction implements UserDefinedFunction {
     this.globals = globals;
   }
 
+  public Map<String, Object> getGlobals() {
+    return globals;
+  }
+
+  public void setFreevars(Tuple freevars) {
+    this.freevars = freevars;
+  }
+
+  public Tuple getFreevars() {
+    return freevars != null ? freevars : Tuple.empty();
+  }
+
+  /**
+   * Gets a free variable Cell by index.
+   * Used by nested functions to access captured variables.
+   */
+  public Cell getFreeVar(int index) {
+    return (Cell) freevars.get(index);
+  }
+
+  public void setCellIndices(ImmutableList<Integer> cellIndices) {
+    this.cellIndices = cellIndices;
+  }
+
+  public ImmutableList<Integer> getCellIndices() {
+    return cellIndices;
+  }
+
   @Override
   public Object call(StarlarkThread thread, Tuple args, Dict<String, Object> kwargs)
       throws EvalException, InterruptedException {
@@ -212,14 +260,21 @@ public final class BytecodeFunction implements UserDefinedFunction {
     // Compute the effective parameter values
     Object[] locals = processArgs(thread.mutability(), positional, named);
 
+    // Spill indicated locals to cells.
+    // This wraps locals that are shared with nested functions in Cell objects.
+    for (int index : cellIndices) {
+      locals[index] = new Cell(locals[index]);
+    }
+
     // Set the frame's locals so debugging APIs can access them
     // Note: Starlark.fastcall already pushes us onto the call stack,
     // so we just need to set the locals on the current frame.
     StarlarkThread.Frame fr = thread.frame(0);
     fr.locals = locals;
 
-    // Execute the function body bytecode with the processed locals
-    return BytecodeInterpreter.executeWithLocals(chunk, thread, locals, globals, filename);
+    // Execute the function body bytecode with the processed locals and captured free variables
+    return BytecodeInterpreter.executeWithLocals(
+        chunk, thread, locals, globals, filename, getFreevars());
   }
 
   /**

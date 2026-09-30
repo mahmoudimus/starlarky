@@ -442,6 +442,29 @@ public final class BytecodeCompiler {
 
     BytecodeChunk funcChunk = funcCompiler.builder.build();
 
+    // Build freevar info for closures
+    ImmutableList.Builder<FunctionDescriptor.FreevarInfo> freevarInfosBuilder =
+        ImmutableList.builder();
+    if (resolvedFunc != null) {
+      for (Resolver.Binding binding : resolvedFunc.getFreeVars()) {
+        // isFromEnclosingFreevars is true if scope is FREE (from outer function's freevars),
+        // false if scope is CELL (from current function's locals)
+        boolean isFromEnclosingFreevars = binding.getScope() == Resolver.Scope.FREE;
+        freevarInfosBuilder.add(
+            new FunctionDescriptor.FreevarInfo(isFromEnclosingFreevars, binding.getIndex()));
+      }
+    }
+    ImmutableList<FunctionDescriptor.FreevarInfo> freevarInfos = freevarInfosBuilder.build();
+
+    // Build cell indices (locals that need to be wrapped in Cells for nested functions)
+    ImmutableList.Builder<Integer> cellIndicesBuilder = ImmutableList.builder();
+    if (resolvedFunc != null) {
+      for (int index : resolvedFunc.getCellIndices()) {
+        cellIndicesBuilder.add(index);
+      }
+    }
+    ImmutableList<Integer> cellIndices = cellIndicesBuilder.build();
+
     // Create function descriptor with all signature metadata
     // Note: defaultValues will be collected at runtime from the stack
     FunctionDescriptor descriptor = new FunctionDescriptor(
@@ -453,7 +476,9 @@ public final class BytecodeCompiler {
         hasKwargs,
         numKeywordOnlyParams,
         ImmutableList.of(),  // defaults are on stack, collected at runtime
-        localCount);
+        localCount,
+        freevarInfos,
+        cellIndices);
 
     // Store descriptor as constant and emit MAKE_FUNCTION with default count
     int descriptorIndex = builder.addConstant(descriptor);
@@ -988,8 +1013,8 @@ public final class BytecodeCompiler {
         builder.emit(Opcode.LOAD_FREE, binding.getIndex(), lineNum);
         break;
       case CELL:
-        // Cell variables are used for closures
-        builder.emit(Opcode.LOAD_FREE, binding.getIndex(), lineNum);
+        // Cell variables are locals shared with nested functions
+        builder.emit(Opcode.LOAD_CELL, binding.getIndex(), lineNum);
         break;
     }
   }
@@ -1014,8 +1039,11 @@ public final class BytecodeCompiler {
         builder.emit(Opcode.STORE_GLOBAL, nameIndex, lineNum);
         break;
       case FREE:
-      case CELL:
         builder.emit(Opcode.STORE_FREE, binding.getIndex(), lineNum);
+        break;
+      case CELL:
+        // Cell variables are locals shared with nested functions
+        builder.emit(Opcode.STORE_CELL, binding.getIndex(), lineNum);
         break;
       default:
         throw new IllegalStateException("Cannot store to " + binding.getScope());
