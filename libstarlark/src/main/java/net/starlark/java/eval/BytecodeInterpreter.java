@@ -384,13 +384,54 @@ public final class BytecodeInterpreter {
         case BUILD_DICT:
           {
             int count = instr.getOperand1();
+            // Pop all key-value pairs from stack (they're in reverse order)
+            Object[] pairs = new Object[count * 2];
+            for (int i = count - 1; i >= 0; i--) {
+              pairs[i * 2 + 1] = pop(); // value
+              pairs[i * 2] = pop();     // key
+            }
+
+            // Build dict in correct order
             Dict<Object, Object> dict = Dict.of(thread.mutability());
             for (int i = 0; i < count; i++) {
-              Object value = pop();
-              Object key = pop();
-              dict.putEntry(key, value);
+              dict.putEntry(pairs[i * 2], pairs[i * 2 + 1]);
             }
             push(dict);
+          }
+          break;
+
+        case UNPACK_SEQUENCE:
+          {
+            int count = instr.getOperand1();
+            Object sequence = pop();
+
+            // Convert to iterable
+            Iterable<?> iterable = Starlark.toIterable(sequence);
+            List<Object> elements = new ArrayList<>();
+            for (Object elem : iterable) {
+              elements.add(elem);
+            }
+
+            // Check size matches
+            if (elements.size() != count) {
+              throw Starlark.errorf(
+                  "too %s values to unpack (expected %d, got %d)",
+                  elements.size() < count ? "few" : "many",
+                  count,
+                  elements.size());
+            }
+
+            // Push elements in forward order (leftmost first)
+            // This way the rightmost element is on top of stack
+            // For example, unpacking [1, 2] pushes 1 then 2, so stack = [1, 2] with 2 on top
+            // Then storing from right to left pops 2 for b, then 1 for a
+            // Debug logging
+            if (Boolean.getBoolean("debug.unpack")) {
+              System.out.println("UNPACK_SEQUENCE " + count + " from " + sequence + " -> " + elements);
+            }
+            for (int i = 0; i < count; i++) {
+              push(elements.get(i));
+            }
           }
           break;
 
