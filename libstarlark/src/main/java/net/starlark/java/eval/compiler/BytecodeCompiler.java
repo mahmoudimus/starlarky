@@ -662,9 +662,8 @@ public final class BytecodeCompiler {
       // Continue loop
       emitJump(Opcode.JUMP, continueLabel, lineNum);
 
-      // Loop done
+      // Loop done (FOR_ITER already popped the iterator when jumping here)
       markLabel(breakLabel);
-      builder.emit(Opcode.POP, lineNum); // Pop iterator
 
     } else if (clause instanceof Comprehension.If) {
       Comprehension.If ifClause = (Comprehension.If) clause;
@@ -843,7 +842,12 @@ public final class BytecodeCompiler {
   }
 
   private void markLabel(String label) {
-    labelOffsets.put(label, builder.getCurrentOffset());
+    // Store instruction index, not byte offset (interpreter uses instruction indices for jumps)
+    int instrIndex = builder.getInstructionCount();
+    if (Boolean.getBoolean("debug.bytecode")) {
+      System.out.printf("LABEL: '%s' = instr %d%n", label, instrIndex);
+    }
+    labelOffsets.put(label, instrIndex);
   }
 
   private void emitJump(Opcode jumpOpcode, String targetLabel, int lineNum) {
@@ -856,6 +860,10 @@ public final class BytecodeCompiler {
     Integer targetOffset = labelOffsets.get(targetLabel);
     if (targetOffset == null) {
       throw new IllegalStateException("Undefined label: " + targetLabel);
+    }
+    if (Boolean.getBoolean("debug.bytecode")) {
+      System.out.printf("PATCH: instr[%d] -> label '%s' = offset %d%n",
+          instructionIndex, targetLabel, targetOffset);
     }
     // Update the jump instruction's operand to point to the target instruction
     builder.updateInstructionOperand(instructionIndex, targetOffset);
