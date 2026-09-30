@@ -37,6 +37,7 @@ public final class BytecodeChunk {
   private final int localCount;
   private final int parameterCount;
   private final List<String> parameterNames;
+  private final List<String> localNames; // Names of all local variables for error messages
   private final List<Integer> lineNumbers; // Line number for each instruction
   private final boolean frozen;
 
@@ -47,6 +48,7 @@ public final class BytecodeChunk {
       int localCount,
       int parameterCount,
       List<String> parameterNames,
+      List<String> localNames,
       List<Integer> lineNumbers,
       boolean frozen) {
     this.name = name;
@@ -55,6 +57,7 @@ public final class BytecodeChunk {
     this.localCount = localCount;
     this.parameterCount = parameterCount;
     this.parameterNames = parameterNames;
+    this.localNames = localNames != null ? localNames : new ArrayList<>();
     this.lineNumbers = lineNumbers;
     this.frozen = frozen;
   }
@@ -89,6 +92,10 @@ public final class BytecodeChunk {
 
   public List<String> getParameterNames() {
     return Collections.unmodifiableList(parameterNames);
+  }
+
+  public List<String> getLocalNames() {
+    return Collections.unmodifiableList(localNames);
   }
 
   public List<Integer> getLineNumbers() {
@@ -218,6 +225,7 @@ public final class BytecodeChunk {
     private final List<Instruction> instructions;
     private final List<Integer> lineNumbers;
     private final List<String> parameterNames;
+    private final List<String> localNames;
     private int localCount;
     private int parameterCount;
     private int currentOffset;
@@ -228,6 +236,7 @@ public final class BytecodeChunk {
       this.instructions = new ArrayList<>();
       this.lineNumbers = new ArrayList<>();
       this.parameterNames = new ArrayList<>();
+      this.localNames = new ArrayList<>();
       this.localCount = 0;
       this.parameterCount = 0;
       this.currentOffset = 0;
@@ -245,6 +254,11 @@ public final class BytecodeChunk {
 
     public Builder addParameter(String name) {
       this.parameterNames.add(name);
+      return this;
+    }
+
+    public Builder addLocalName(String name) {
+      this.localNames.add(name);
       return this;
     }
 
@@ -311,6 +325,7 @@ public final class BytecodeChunk {
           localCount,
           parameterCount,
           new ArrayList<>(parameterNames),
+          new ArrayList<>(localNames),
           new ArrayList<>(lineNumbers),
           true);
     }

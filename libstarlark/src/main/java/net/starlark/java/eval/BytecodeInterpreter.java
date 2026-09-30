@@ -271,7 +271,12 @@ public final class BytecodeInterpreter {
             int index = instr.getOperand1();
             Object value = locals[index];
             if (value == null) {
-              throw Starlark.errorf("local variable not initialized");
+              // Get the variable name from the chunk's local names
+              String varName = "?";
+              if (index < chunk.getLocalNames().size()) {
+                varName = chunk.getLocalNames().get(index);
+              }
+              throw Starlark.errorf("local variable '%s' is referenced before assignment", varName);
             }
             push(value);
           }
@@ -592,6 +597,13 @@ public final class BytecodeInterpreter {
         case GET_ITER:
           {
             Object iterable = pop();
+
+            // Check if strings are forbidden in this context (comprehensions)
+            if (iterable instanceof String) {
+              throw Starlark.errorf("type 'string' is not iterable");
+            }
+
+            // toIterable() will throw an error if the object is not iterable
             Iterable<?> starlarkIterable = Starlark.toIterable(iterable);
             Iterator<?> iterator = starlarkIterable.iterator();
             // Track mutations on the iterable during iteration
