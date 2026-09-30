@@ -176,6 +176,40 @@ public final class BytecodeInterpreter {
   }
 
   /**
+   * Executes a bytecode chunk with pre-processed local variables.
+   *
+   * <p>This is used by BytecodeFunction.fastcall() after argument processing has been done.
+   * The locals array contains the fully resolved parameter values including defaults,
+   * *args tuple, and **kwargs dict as appropriate.
+   *
+   * @param chunk the bytecode to execute
+   * @param thread the Starlark thread context
+   * @param locals the pre-processed local variable values
+   * @param globals the global variable namespace
+   * @param filename the source filename for error reporting
+   * @return the result of execution
+   * @throws EvalException if execution fails
+   * @throws InterruptedException if execution is interrupted
+   */
+  public static Object executeWithLocals(
+      BytecodeChunk chunk,
+      StarlarkThread thread,
+      Object[] locals,
+      Map<String, Object> globals,
+      String filename)
+      throws EvalException, InterruptedException {
+    BytecodeInterpreter interpreter = new BytecodeInterpreter(chunk, thread, globals, filename);
+
+    // Copy pre-processed locals directly
+    int localCount = Math.min(locals.length, interpreter.locals.length);
+    for (int i = 0; i < localCount; i++) {
+      interpreter.locals[i] = locals[i];
+    }
+
+    return interpreter.run();
+  }
+
+  /**
    * Creates a Location object for the current instruction.
    */
   private Location currentLocation() {
@@ -305,7 +339,7 @@ public final class BytecodeInterpreter {
               if (index < chunk.getLocalNames().size()) {
                 varName = chunk.getLocalNames().get(index);
               }
-              throw Starlark.errorf("local variable '%s' is referenced before assignment", varName);
+              throw Starlark.errorf("local variable '%s' is referenced before assignment.", varName);
             }
             push(value);
           }
@@ -669,6 +703,97 @@ public final class BytecodeInterpreter {
           }
           break;
 
+        case CALL_EX:
+          {
+            // CALL_EX handles calls with *args and/or **kwargs expansion
+            // Stack layout: [func, pos_list, star_arg_or_None, kw_dict, starstar_arg_or_None]
+
+            // Pop **kwargs value (or None)
+            Object starStarArg = pop();
+
+            // Pop keyword args dict
+            Object kwDictObj = pop();
+
+            // Pop *args value (or None)
+            Object starArg = pop();
+
+            // Pop positional args list
+            Object posListObj = pop();
+
+            // Pop function
+            Object function = pop();
+
+            // Build positional arguments list
+            List<Object> posArgList = new ArrayList<>();
+
+            // Add explicit positional args
+            if (posListObj instanceof StarlarkList) {
+              for (Object item : (StarlarkList<?>) posListObj) {
+                posArgList.add(item);
+              }
+            } else if (posListObj instanceof Tuple) {
+              for (Object item : (Tuple) posListObj) {
+                posArgList.add(item);
+              }
+            }
+
+            // Extend with *args if present
+            if (starArg != Starlark.NONE) {
+              try {
+                for (Object item : Starlark.toIterable(starArg)) {
+                  posArgList.add(item);
+                }
+              } catch (EvalException e) {
+                throw Starlark.errorf(
+                    "argument after * must be an iterable, not %s", Starlark.type(starArg));
+              }
+            }
+
+            // Build keyword arguments map
+            Map<String, Object> kwargs = new HashMap<>();
+
+            // Add explicit keyword args
+            if (kwDictObj instanceof Dict) {
+              for (Map.Entry<?, ?> entry : ((Dict<?, ?>) kwDictObj).entrySet()) {
+                if (!(entry.getKey() instanceof String)) {
+                  throw Starlark.errorf(
+                      "keywords must be strings, not %s", Starlark.type(entry.getKey()));
+                }
+                kwargs.put((String) entry.getKey(), entry.getValue());
+              }
+            }
+
+            // Merge **kwargs if present
+            if (starStarArg != Starlark.NONE) {
+              if (!(starStarArg instanceof Dict)) {
+                throw Starlark.errorf(
+                    "argument after ** must be a dict, not %s", Starlark.type(starStarArg));
+              }
+              for (Map.Entry<?, ?> entry : ((Dict<?, ?>) starStarArg).entrySet()) {
+                if (!(entry.getKey() instanceof String)) {
+                  throw Starlark.errorf(
+                      "keywords must be strings, not %s", Starlark.type(entry.getKey()));
+                }
+                String key = (String) entry.getKey();
+                if (kwargs.containsKey(key)) {
+                  // Get function name for error message
+                  String funcName = function instanceof StarlarkCallable
+                      ? ((StarlarkCallable) function).getName()
+                      : Starlark.type(function);
+                  // Use "parameter" not "keyword argument" to match StarlarkFunction behavior
+                  throw Starlark.errorf(
+                      "%s() got multiple values for parameter '%s'", funcName, key);
+                }
+                kwargs.put(key, entry.getValue());
+              }
+            }
+
+            // Call the function
+            Object result = Starlark.call(thread, function, posArgList, kwargs);
+            push(result);
+          }
+          break;
+
         case RETURN:
           return pop();
 
@@ -779,13 +904,28 @@ public final class BytecodeInterpreter {
             FunctionDescriptor descriptor =
                 (FunctionDescriptor) chunk.getConstantPool().getConstant(instr.getOperand1());
 
-            // Create BytecodeFunction from descriptor
+            // Get number of defaults from operand2
+            int numDefaults = instr.getOperand2();
+
+            // Pop default values from stack (in reverse order - last default is on top)
+            Object[] defaultsArray = new Object[numDefaults];
+            for (int i = numDefaults - 1; i >= 0; i--) {
+              defaultsArray[i] = pop();
+            }
+            Tuple defaultValues = Tuple.wrap(defaultsArray);
+
+            // Create BytecodeFunction with full signature info
             BytecodeFunction function =
                 new BytecodeFunction(
                     descriptor.getName(),
                     descriptor.getLocation(),
                     descriptor.getChunk(),
                     descriptor.getParameterNames(),
+                    descriptor.hasVarargs(),
+                    descriptor.hasKwargs(),
+                    descriptor.getNumKeywordOnlyParams(),
+                    defaultValues,
+                    descriptor.getLocalCount(),
                     filename);
 
             // Set globals so the function can access them when called

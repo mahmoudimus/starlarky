@@ -95,10 +95,11 @@ public enum Opcode {
   // Function calls
   CALL(2),          // Call function (operand1: positional args, operand2: keyword args)
   CALL_METHOD(2),   // Call method (operand1: positional args, operand2: keyword args)
+  CALL_EX(1),       // Call with *args and/or **kwargs expansion (operand: flags for what's on stack)
   RETURN(0),        // Return from function
 
   // Function definition
-  MAKE_FUNCTION(1), // Create function object (operand: default args count)
+  MAKE_FUNCTION(2), // Create function object (operand1: descriptor index, operand2: default args count)
   MAKE_CLOSURE(2),  // Create closure (operand1: free vars, operand2: default args)
 
   // Control flow
