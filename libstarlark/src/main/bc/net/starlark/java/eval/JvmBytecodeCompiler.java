@@ -85,12 +85,24 @@ final class JvmBytecodeCompiler {
     return null;
   }
 
-  /** Marks a chunk too large for one JVM method (64KB of bytecode); it stays interpreted. */
+  /**
+   * Marks a chunk that is not compiled, because it is too large for one JVM method (64KB of
+   * bytecode) or too costly to generate (see {@link #MAX_CODEGEN_COST}); it stays interpreted.
+   */
   private static final Object TOO_LARGE = new Object();
 
   /**
+   * Largest {@link #codegenCost} of a chunk that is compiled. Generating a chunk's class takes
+   * memory proportional to its cost (ASM computes a frame of every local at every label), so a
+   * chunk the script makes arbitrarily costly, such as one with a list literal of thousands of
+   * elements, would otherwise exhaust the heap. Of Larky's own modules, only
+   * Crypto/Util/number.star's top level exceeds the default; its functions all cost under 25,000.
+   */
+  static final long MAX_CODEGEN_COST = Long.getLong("starlark.jit.maxCost", 1_000_000);
+
+  /**
    * Returns the compiled code for {@code chunk}, compiling it on first use, or null if the chunk
-   * is too large for a JVM method, in which case it runs on the interpreter.
+   * is too large or too costly to compile, in which case it runs on the interpreter.
    */
   static JvmCode codeFor(BytecodeChunk chunk) {
     Object code = chunk.getJitCode();
@@ -98,10 +110,14 @@ final class JvmBytecodeCompiler {
       synchronized (chunk) {
         code = chunk.getJitCode();
         if (code == null) {
-          try {
-            code = compile(chunk);
-          } catch (MethodTooLargeException | org.objectweb.asm.ClassTooLargeException e) {
+          if (codegenCost(chunk) > MAX_CODEGEN_COST) {
             code = TOO_LARGE;
+          } else {
+            try {
+              code = compile(chunk);
+            } catch (MethodTooLargeException | org.objectweb.asm.ClassTooLargeException e) {
+              code = TOO_LARGE;
+            }
           }
           chunk.setJitCode(code);
         }
@@ -339,16 +355,32 @@ final class JvmBytecodeCompiler {
     }
   }
 
-  private static byte[] generate(BytecodeChunk chunk, int segmentBudget) {
+  /**
+   * The cost of generating {@code chunk}'s class: its instructions times the JVM locals each of
+   * its methods has, since every instruction gets a label and ASM keeps a frame of the locals at
+   * each one.
+   */
+  static long codegenCost(BytecodeChunk chunk) {
     List<Instruction> code = chunk.getInstructions();
-    int n = code.size();
-    int[] depth = stackDepths(code);
+    return (long) code.size() * (SLOTS + maxStackDepth(code, stackDepths(code)));
+  }
+
+  /** The deepest the Starlark stack gets in {@code code}, including within an instruction. */
+  private static int maxStackDepth(List<Instruction> code, int[] depth) {
     int maxDepth = 0;
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < code.size(); i++) {
       if (depth[i] >= 0) {
         maxDepth = Math.max(maxDepth, depth[i] + Math.max(0, stackEffect0(code.get(i))));
       }
     }
+    return maxDepth;
+  }
+
+  private static byte[] generate(BytecodeChunk chunk, int segmentBudget) {
+    List<Instruction> code = chunk.getInstructions();
+    int n = code.size();
+    int[] depth = stackDepths(code);
+    int maxDepth = maxStackDepth(code, depth);
     int[] starts = segmentStarts(code, depth, segmentBudget);
 
     // Basic-block leaders, for step counting: one addition per block instead of per instruction.

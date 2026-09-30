@@ -128,6 +128,21 @@ public final class JvmBytecodeCompilerTest {
   }
 
   @Test
+  public void costlyChunkFallsBackToTheInterpreter() throws Exception {
+    // Generating a class for a function with a list literal this long would take gigabytes
+    // (each pending element is a JVM local, and ASM records every local at every instruction).
+    StringBuilder src = new StringBuilder("def f():\n  return [");
+    for (int i = 0; i < 20_000; i++) {
+      src.append("(").append(i).append(", \"s\"), ");
+    }
+    src.append("]\nr = len(f())\n");
+    assertThat(run(src.toString())).isEqualTo(StarlarkInt.of(20_000));
+    assertThat(JvmBytecodeCompiler.codegenCost(functionChunk("f")))
+        .isGreaterThan(JvmBytecodeCompiler.MAX_CODEGEN_COST);
+    assertThat(JvmBytecodeCompiler.codeFor(functionChunk("f"))).isNull(); // interpreted
+  }
+
+  @Test
   public void oversizedLoopBodyFallsBackToTheInterpreter() throws Exception {
     // A loop keeps its iterator on the stack, so its body cannot be split.
     StringBuilder src = new StringBuilder("def f():\n  x = 0\n  for i in range(2):\n");
