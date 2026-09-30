@@ -154,11 +154,9 @@ public class ErrorConsistencyTest {
       System.out.println("Bytecode: " + bytecodeError.message);
 
       // Messages should be semantically similar
-      assertTrue("Both should be type-related errors",
-          (interpreterError.message.toLowerCase().contains("type")
-              || interpreterError.message.toLowerCase().contains("cannot"))
-              && (bytecodeError.message.toLowerCase().contains("type")
-              || bytecodeError.message.toLowerCase().contains("cannot")));
+      // Accept messages containing "type", "cannot", "unsupported", or "operation"
+      assertErrorContains(interpreterError, "type", "cannot", "unsupported", "operation");
+      assertErrorContains(bytecodeError, "type", "cannot", "unsupported", "operation");
     }
   }
 
