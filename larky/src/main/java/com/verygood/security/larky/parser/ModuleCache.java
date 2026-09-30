@@ -1,6 +1,5 @@
 package com.verygood.security.larky.parser;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import java.util.Collections;
 import java.util.IdentityHashMap;
@@ -39,18 +38,16 @@ final class ModuleCache {
   private record Key(
       String path, FileOptions options, StarlarkSemantics semantics, boolean bytecode) {}
 
-  /** A cached module and the conditions for reusing it. */
-  private record Entry(
-      Module module, ImmutableMap<String, Object> captured, ImmutableList<Entry> dependencies) {
+  /**
+   * A cached module and the conditions for reusing it: the values it and, transitively, every
+   * module it loaded captured from the environment, flattened when it is cached so that checking
+   * them does not walk the dependency graph (which revisits shared dependencies) on every load.
+   */
+  private record Entry(Module module, ImmutableMap<String, Object> captured) {
 
     boolean reusableIn(Map<String, Object> env) {
       for (Map.Entry<String, Object> e : captured.entrySet()) {
         if (env.get(e.getKey()) != e.getValue()) {
-          return false;
-        }
-      }
-      for (Entry dependency : dependencies) {
-        if (!dependency.reusableIn(env)) {
           return false;
         }
       }
@@ -97,14 +94,13 @@ final class ModuleCache {
     if (DISABLED || predeclaredNames == null) {
       return;
     }
-    ImmutableMap.Builder<String, Object> captured = ImmutableMap.builder();
+    Map<String, Object> captured = new java.util.HashMap<>();
     for (String name : predeclaredNames) {
       Object value = env.get(name);
       if (value != null) {
         captured.put(name, value);
       }
     }
-    ImmutableList.Builder<Entry> dependencies = ImmutableList.builder();
     for (Map.Entry<String, Module> load : loaded.entrySet()) {
       Module dependency = load.getValue();
       if (env.get(load.getKey()) == dependency) {
@@ -115,16 +111,21 @@ final class ModuleCache {
       if (entry == null) {
         return; // depends on a module that is not shared: don't share this one either
       }
-      dependencies.add(entry);
+      for (Map.Entry<String, Object> e : entry.captured().entrySet()) {
+        Object previous = captured.putIfAbsent(e.getKey(), e.getValue());
+        if (previous != null && previous != e.getValue()) {
+          return; // no environment can satisfy both: don't share
+        }
+      }
     }
-    Entry entry = new Entry(module, captured.buildKeepingLast(), dependencies.build());
+    Entry entry = new Entry(module, ImmutableMap.copyOf(captured));
     CACHE.put(key(path, options, semantics), entry);
     BY_MODULE.put(module, entry);
   }
 
   /** Registers a module whose values never depend on the evaluation (a native module wrapper). */
   static void putStable(Module module) {
-    BY_MODULE.put(module, new Entry(module, ImmutableMap.of(), ImmutableList.of()));
+    BY_MODULE.put(module, new Entry(module, ImmutableMap.of()));
   }
 
   /** Number of cached modules, for tests. */
