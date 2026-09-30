@@ -697,6 +697,10 @@ public final class BytecodeInterpreter {
               pop(); // Discard, we already have it
             }
 
+            // Set the frame's location to the call site before making the call
+            // This is important for stack traces and debugging
+            thread.frame(0).setLocation(currentLocation());
+
             // Call the function with positional and keyword arguments
             Object result = Starlark.call(thread, function, posArgList, kwargs);
             push(result);
@@ -787,6 +791,9 @@ public final class BytecodeInterpreter {
                 kwargs.put(key, entry.getValue());
               }
             }
+
+            // Set the frame's location to the call site before making the call
+            thread.frame(0).setLocation(currentLocation());
 
             // Call the function
             Object result = Starlark.call(thread, function, posArgList, kwargs);

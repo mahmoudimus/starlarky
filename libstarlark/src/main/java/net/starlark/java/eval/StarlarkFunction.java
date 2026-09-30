@@ -34,7 +34,7 @@ import net.starlark.java.syntax.Types;
     name = "function",
     category = "core",
     doc = "The type of functions declared in Starlark.")
-public final class StarlarkFunction implements StarlarkCallable {
+public final class StarlarkFunction implements UserDefinedFunction {
 
   final Resolver.Function rfn;
   // TODO: #27370 - at eval time, we need only types of functions and globals; we could save some
@@ -181,8 +181,17 @@ public final class StarlarkFunction implements StarlarkCallable {
    * Reports whether this function has a residual keyword arguments parameter, {@code def
    * f(**kwargs)}.
    */
+  @Override
   public boolean hasKwargs() {
     return rfn.hasKwargs();
+  }
+
+  /**
+   * Returns the number of keyword-only parameters.
+   */
+  @Override
+  public int numKeywordOnlyParams() {
+    return rfn.numKeywordOnlyParams();
   }
 
   /** Returns the location of the function's defining identifier. */
