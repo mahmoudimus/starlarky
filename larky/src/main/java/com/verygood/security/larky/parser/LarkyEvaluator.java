@@ -3,7 +3,6 @@ package com.verygood.security.larky.parser;
 import static com.google.common.base.Preconditions.checkNotNull;
 
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.Maps;
 import com.google.common.flogger.FluentLogger;
 import com.verygood.security.larky.ModuleSupplier;
 import com.verygood.security.larky.annot.Library;
@@ -414,17 +413,31 @@ public final class LarkyEvaluator {
     return envBuilder.build();
   }
 
-  private ImmutableMap<String, Object> createEnvironment(Iterable<Class<?>> globalModules,
-      Map<String, Object> globals) {
-    Map<String, Object> env = Maps.newHashMap();
+  // The merged bindings of each set of built-in module classes (every evaluation uses the same
+  // few sets), so that an evaluation only adds its own globals to them.
+  private static final java.util.concurrent.ConcurrentHashMap<
+      com.google.common.collect.ImmutableList<Class<?>>, ImmutableMap<String, Object>>
+      MERGED_BUILTIN_BINDINGS = new java.util.concurrent.ConcurrentHashMap<>();
 
+  private static ImmutableMap<String, Object> mergedBuiltinBindings(
+      Iterable<Class<?>> globalModules) {
+    ImmutableMap.Builder<String, Object> env = ImmutableMap.builder();
     for (Class<?> module : globalModules) {
       logger.atFine().log("Creating variable for %s", module.getName());
       // Create the module object and associate it with the functions
       env.putAll(BUILTIN_BINDINGS.computeIfAbsent(module, LarkyEvaluator::builtinBindings));
     }
-    env.putAll(globals);
-    return ImmutableMap.copyOf(env);
+    return env.buildKeepingLast();
+  }
+
+  private ImmutableMap<String, Object> createEnvironment(Iterable<Class<?>> globalModules,
+      Map<String, Object> globals) {
+    return ImmutableMap.<String, Object>builder()
+        .putAll(MERGED_BUILTIN_BINDINGS.computeIfAbsent(
+            com.google.common.collect.ImmutableList.copyOf(globalModules),
+            LarkyEvaluator::mergedBuiltinBindings))
+        .putAll(globals)
+        .buildKeepingLast();
   }
 
 }
