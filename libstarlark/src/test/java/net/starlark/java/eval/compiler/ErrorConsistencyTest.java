@@ -479,7 +479,7 @@ public class ErrorConsistencyTest {
       Program program = Program.compileFile(file, module);
 
       try (Mutability mu = Mutability.create("test")) {
-        StarlarkThread thread = new StarlarkThread(mu, StarlarkSemantics.DEFAULT);
+        StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
         Starlark.execFile(ParserInput.fromString(source, TEST_FILE), FileOptions.DEFAULT, module, thread);
       }
       return null; // No error
@@ -509,7 +509,7 @@ public class ErrorConsistencyTest {
       Map<String, Object> globals = new HashMap<>();
 
       try (Mutability mu = Mutability.create("test")) {
-        StarlarkThread thread = new StarlarkThread(mu, StarlarkSemantics.DEFAULT);
+        StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
         BytecodeInterpreter.execute(bytecode, thread, globals, TEST_FILE);
       }
       return null; // No error

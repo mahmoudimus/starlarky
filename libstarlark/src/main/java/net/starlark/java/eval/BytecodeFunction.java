@@ -14,6 +14,9 @@
 
 package net.starlark.java.eval;
 
+import net.starlark.java.annot.StarlarkBuiltin;
+import net.starlark.java.syntax.Resolver;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
 import java.util.ArrayList;
@@ -38,6 +41,10 @@ import net.starlark.java.syntax.Location;
  *   <li>**kwargs
  * </ul>
  */
+@StarlarkBuiltin(
+    name = "function",
+    category = "core",
+    doc = "The type of functions declared in Starlark.")
 public final class BytecodeFunction implements UserDefinedFunction {
 
   private final String name;
@@ -57,6 +64,9 @@ public final class BytecodeFunction implements UserDefinedFunction {
   // Captured free variables (cells from enclosing functions).
   // Indexed by LOAD_FREE/STORE_FREE operands.
   private Tuple freevars;
+
+  // Identity token, as for StarlarkFunction; may be replaced by a global one on export.
+  private SymbolGenerator.Symbol<?> token;
 
   // Indices of locals that need to be wrapped in Cells at function entry.
   // These are variables shared with nested functions.
@@ -165,7 +175,15 @@ public final class BytecodeFunction implements UserDefinedFunction {
   }
 
   @Override
-  public int numKeywordOnlyParams() {
+  public int getNumOrdinaryParameters() {
+    return parameterNames.size()
+        - numKeywordOnlyParams
+        - (hasVarargs ? 1 : 0)
+        - (hasKwargs ? 1 : 0);
+  }
+
+  @Override
+  public int getNumKeywordOnlyParameters() {
     return numKeywordOnlyParams;
   }
 
@@ -236,6 +254,51 @@ public final class BytecodeFunction implements UserDefinedFunction {
     return cellIndices;
   }
 
+  void setToken(SymbolGenerator.Symbol<?> token) {
+    this.token = token;
+  }
+
+  @Override
+  public SymbolGenerator.Symbol<?> getToken() {
+    return token;
+  }
+
+  /** Mirrors {@code StarlarkFunction.export}. */
+  void export(StarlarkThread thread, String name) {
+    if (token == null || !token.getOwner().equals(thread.getOwner()) || token.isGlobal()) {
+      return;
+    }
+    token = token.exportAs(name);
+  }
+
+  /**
+   * Adds this frame's locals to {@code env} the way {@code StarlarkThread.Frame.getLocals} does for
+   * a StarlarkFunction: cells are unwrapped, and comprehension variables outside their scope at
+   * {@code loc} are skipped.
+   */
+  void addDebugLocals(ImmutableMap.Builder<String, Object> env, Object[] locals, Location loc) {
+    if (locals == null) {
+      return;
+    }
+    List<Resolver.Binding> bindings = chunk.getLocalBindings();
+    List<String> names = chunk.getLocalNames();
+    for (int i = 0; i < locals.length && i < names.size(); i++) {
+      Object local = locals[i];
+      if (local instanceof Cell cell) {
+        local = cell.x;
+      }
+      if (local == null) {
+        continue;
+      }
+      if (i < bindings.size()
+          && bindings.get(i) instanceof Resolver.ComprehensionBinding comprehensionBinding
+          && !comprehensionBinding.inScope(loc)) {
+        continue;
+      }
+      env.put(names.get(i), local);
+    }
+  }
+
   @Override
   public Object call(StarlarkThread thread, Tuple args, Dict<String, Object> kwargs)
       throws EvalException, InterruptedException {
@@ -257,7 +320,49 @@ public final class BytecodeFunction implements UserDefinedFunction {
   }
 
   @Override
-  public Object fastcall(StarlarkThread thread, Object[] positional, Object[] named)
+  public StarlarkCallable.ArgumentProcessor requestArgumentProcessor(StarlarkThread thread) {
+    return new ArgumentProcessor(thread);
+  }
+
+  /** Collects arguments in call order and binds them with {@link #fastcall}. */
+  private final class ArgumentProcessor extends StarlarkCallable.ArgumentProcessor {
+    private final ArrayList<Object> positional = new ArrayList<>();
+    private final ArrayList<Object> named = new ArrayList<>(); // name, value, name, value, ...
+
+    ArgumentProcessor(StarlarkThread thread) {
+      super(thread);
+    }
+
+    @Override
+    public void addPositionalArg(Object value) {
+      positional.add(value);
+    }
+
+    @Override
+    public void addNamedArg(String name, Object value) {
+      named.add(name);
+      named.add(value);
+    }
+
+    @Override
+    public StarlarkCallable getCallable() {
+      return BytecodeFunction.this;
+    }
+
+    @Override
+    public Object call(StarlarkThread thread) throws EvalException, InterruptedException {
+      return fastcall(thread, positional.toArray(), named.toArray());
+    }
+  }
+
+  @Override
+  public Object positionalOnlyCall(StarlarkThread thread, Object... positional)
+      throws EvalException, InterruptedException {
+    return fastcall(thread, positional, new Object[0]);
+  }
+
+  /** Binds {@code positional} and {@code named} (name/value pairs) to parameters and runs the body. */
+  Object fastcall(StarlarkThread thread, Object[] positional, Object[] named)
       throws EvalException, InterruptedException {
     // Check for disallowed recursion
     if (!thread.isRecursionAllowed() && thread.isRecursiveCall(this)) {
@@ -441,7 +546,7 @@ public final class BytecodeFunction implements UserDefinedFunction {
   }
 
   @Override
-  public void repr(Printer printer) {
+  public void repr(Printer printer, StarlarkSemantics semantics) {
     printer.append("<function ");
     printer.append(name);
     printer.append(">");

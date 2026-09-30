@@ -15,8 +15,12 @@
 package net.starlark.java.eval;
 
 import static com.google.common.truth.Truth.assertWithMessage;
+import static java.nio.charset.StandardCharsets.UTF_8;
 
+import com.google.common.collect.ImmutableMap;
 import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -38,6 +42,18 @@ public final class ScriptFilesTest {
   private static final long STACK_SIZE = 512 * 1024;
 
   private static final File TESTDATA = new File("src/test/java/net/starlark/java/eval/testdata");
+
+  /**
+   * Edits applied to upstream test files before running them, for syntax that VGS rejects on
+   * purpose. The files themselves stay identical to upstream so syncs don't conflict; if upstream
+   * changes one of these lines, the test fails until the edit here is updated.
+   */
+  private static final ImmutableMap<String, ImmutableMap<String, String>> VGS_EDITS =
+      ImmutableMap.of(
+          "json.star",
+          // Non-ASCII octal escapes are an error in VGS strings. The branch that uses it only runs
+          // under Bazel's UTF-8 byte strings, which VGS doesn't have.
+          ImmutableMap.of("'\"\\360\"'", "'\"\\u00f0\"'"));
 
   @Parameters(name = "{0}")
   public static List<Object[]> files() {
@@ -65,7 +81,7 @@ public final class ScriptFilesTest {
             null,
             () -> {
               try {
-                ok.set(ScriptTest.runFile(new File(TESTDATA, name)));
+                ok.set(ScriptTest.runFile(withVgsEdits(new File(TESTDATA, name))));
               } catch (Throwable t) {
                 error.set(t);
               }
@@ -78,5 +94,27 @@ public final class ScriptFilesTest {
       throw error.get();
     }
     assertWithMessage("%s failed; see stderr for details", name).that(ok.get()).isTrue();
+  }
+
+  /** Returns {@code file}, or a temporary copy with this file's {@link #VGS_EDITS} applied. */
+  private static File withVgsEdits(File file) throws Exception {
+    ImmutableMap<String, String> edits = VGS_EDITS.get(file.getName());
+    if (edits == null) {
+      return file;
+    }
+    String content = Files.readString(file.toPath(), UTF_8);
+    for (var edit : edits.entrySet()) {
+      if (!content.contains(edit.getKey())) {
+        throw new AssertionError(
+            file + " no longer contains " + edit.getKey() + "; update ScriptFilesTest.VGS_EDITS");
+      }
+      content = content.replace(edit.getKey(), edit.getValue());
+    }
+    Path dir = Files.createTempDirectory("vgs-testdata");
+    Path copy = dir.resolve(file.getName());
+    Files.writeString(copy, content, UTF_8);
+    copy.toFile().deleteOnExit();
+    dir.toFile().deleteOnExit();
+    return copy.toFile();
   }
 }

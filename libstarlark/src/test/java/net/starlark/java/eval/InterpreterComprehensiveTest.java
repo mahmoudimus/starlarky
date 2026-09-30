@@ -367,7 +367,7 @@ public final class InterpreterComprehensiveTest {
     try (Mutability mu = Mutability.create("test")) {
       StarlarkSemantics semantics =
           StarlarkSemantics.builder().setBool(StarlarkSemantics.ALLOW_RECURSION, true).build();
-      StarlarkThread thread = new StarlarkThread(mu, semantics);
+      StarlarkThread thread = StarlarkThread.createTransient(mu, semantics);
       Starlark.execFile(input, FileOptions.DEFAULT, module, thread);
     }
     assertThat(module.getGlobal("result")).isEqualTo(StarlarkInt.of(120));
@@ -394,7 +394,7 @@ public final class InterpreterComprehensiveTest {
     try (Mutability mu = Mutability.create("test")) {
       StarlarkSemantics semantics =
           StarlarkSemantics.builder().setBool(StarlarkSemantics.ALLOW_RECURSION, true).build();
-      StarlarkThread thread = new StarlarkThread(mu, semantics);
+      StarlarkThread thread = StarlarkThread.createTransient(mu, semantics);
       Starlark.execFile(input, FileOptions.DEFAULT, module, thread);
     }
     assertThat(module.getGlobal("a")).isEqualTo(true);
@@ -588,7 +588,7 @@ public final class InterpreterComprehensiveTest {
   public void testExecutionStepLimit() throws Exception {
     Module module = Module.create();
     try (Mutability mu = Mutability.create("test")) {
-      StarlarkThread thread = new StarlarkThread(mu, StarlarkSemantics.DEFAULT);
+      StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
       thread.setMaxExecutionSteps(100);
 
       ParserInput input = ParserInput.fromLines(
@@ -610,7 +610,7 @@ public final class InterpreterComprehensiveTest {
   public void testExpirationTimeout() throws Exception {
     Module module = Module.create();
     try (Mutability mu = Mutability.create("test")) {
-      StarlarkThread thread = new StarlarkThread(mu, StarlarkSemantics.DEFAULT);
+      StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
       thread.setExpirationMs(1); // Very short timeout
 
       ParserInput input = ParserInput.fromLines(
@@ -684,7 +684,7 @@ public final class InterpreterComprehensiveTest {
     try (Mutability mu = Mutability.create("test")) {
       StarlarkSemantics semantics =
           StarlarkSemantics.builder().setBool(StarlarkSemantics.ALLOW_RECURSION, true).build();
-      StarlarkThread thread = new StarlarkThread(mu, semantics);
+      StarlarkThread thread = StarlarkThread.createTransient(mu, semantics);
       Starlark.execFile(input, FileOptions.DEFAULT, module, thread);
     }
     assertThat(module.getGlobal("result")).isEqualTo(StarlarkInt.of(6765));
@@ -708,7 +708,7 @@ public final class InterpreterComprehensiveTest {
     try (Mutability mu = Mutability.create("test")) {
       StarlarkSemantics semantics =
           StarlarkSemantics.builder().setBool(StarlarkSemantics.ALLOW_RECURSION, true).build();
-      StarlarkThread thread = new StarlarkThread(mu, semantics);
+      StarlarkThread thread = StarlarkThread.createTransient(mu, semantics);
       Starlark.execFile(input, FileOptions.DEFAULT, module, thread);
     }
     assertThat(module.getGlobal("result")).isEqualTo(

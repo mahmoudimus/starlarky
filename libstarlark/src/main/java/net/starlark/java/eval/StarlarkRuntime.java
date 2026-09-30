@@ -47,7 +47,7 @@ public final class StarlarkRuntime {
    * require specific thread context.
    */
   private static StarlarkThread getDefaultThread() {
-    return new StarlarkThread(Mutability.IMMUTABLE, StarlarkSemantics.DEFAULT);
+    return StarlarkThread.createTransient(Mutability.IMMUTABLE, StarlarkSemantics.DEFAULT);
   }
 
   // ==================== Constants ====================

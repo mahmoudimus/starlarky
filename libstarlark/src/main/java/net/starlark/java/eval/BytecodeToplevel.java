@@ -24,12 +24,15 @@ final class BytecodeToplevel implements StarlarkCallable {
   private final String name;
   private final Location location;
   @Nullable private final Module module;
+  private final AbstractBytecodeVM vm;
 
-  BytecodeToplevel(String name, String filename, Map<String, Object> globals) {
+  BytecodeToplevel(
+      String name, String filename, Map<String, Object> globals, AbstractBytecodeVM vm) {
     this.name = name != null ? name : "<toplevel>";
     this.location =
         filename != null ? Location.fromFileLineColumn(filename, 0, 0) : Location.BUILTIN;
     this.module = BytecodeGlobals.moduleOf(globals);
+    this.vm = vm;
   }
 
   @Override
@@ -46,6 +49,13 @@ final class BytecodeToplevel implements StarlarkCallable {
   @Nullable
   Module getModule() {
     return module;
+  }
+
+  /** Runs the top-level code; the caller ({@link Starlark#positionalOnlyCall}) pushed the frame. */
+  @Override
+  public Object positionalOnlyCall(StarlarkThread thread, Object... positional)
+      throws EvalException, InterruptedException {
+    return vm.run();
   }
 
   @Override

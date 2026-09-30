@@ -14,6 +14,7 @@
 
 package net.starlark.java.eval.compiler;
 
+import net.starlark.java.syntax.Resolver;
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -38,6 +39,9 @@ public final class BytecodeChunk {
   private final int parameterCount;
   private final List<String> parameterNames;
   private final List<String> localNames; // Names of all local variables for error messages
+  // Resolver bindings of the locals, by slot; empty if the chunk was not compiled from a resolved
+  // function. Used to present comprehension variables to the debugger as Eval does.
+  private final List<Resolver.Binding> localBindings;
   private final List<Integer> lineNumbers; // Line number for each instruction
   private final List<Integer> columnNumbers; // Column number for each instruction
   private final boolean frozen;
@@ -50,6 +54,7 @@ public final class BytecodeChunk {
       int parameterCount,
       List<String> parameterNames,
       List<String> localNames,
+      List<Resolver.Binding> localBindings,
       List<Integer> lineNumbers,
       List<Integer> columnNumbers,
       boolean frozen) {
@@ -60,6 +65,7 @@ public final class BytecodeChunk {
     this.parameterCount = parameterCount;
     this.parameterNames = parameterNames;
     this.localNames = localNames != null ? localNames : new ArrayList<>();
+    this.localBindings = localBindings;
     this.lineNumbers = lineNumbers;
     this.columnNumbers = columnNumbers != null ? columnNumbers : new ArrayList<>();
     this.frozen = frozen;
@@ -99,6 +105,11 @@ public final class BytecodeChunk {
 
   public List<String> getLocalNames() {
     return Collections.unmodifiableList(localNames);
+  }
+
+  /** Returns the resolver bindings of the locals, by slot (possibly empty). */
+  public List<Resolver.Binding> getLocalBindings() {
+    return Collections.unmodifiableList(localBindings);
   }
 
   public List<Integer> getLineNumbers() {
@@ -244,6 +255,7 @@ public final class BytecodeChunk {
     private final List<Integer> columnNumbers;
     private final List<String> parameterNames;
     private final List<String> localNames;
+    private final List<Resolver.Binding> localBindings = new ArrayList<>();
     private int localCount;
     private int parameterCount;
     private int currentOffset;
@@ -278,6 +290,13 @@ public final class BytecodeChunk {
 
     public Builder addLocalName(String name) {
       this.localNames.add(name);
+      return this;
+    }
+
+    /** Adds the next local slot, named after its resolver binding. */
+    public Builder addLocal(Resolver.Binding binding) {
+      this.localNames.add(binding.getName() != null ? binding.getName() : "?");
+      this.localBindings.add(binding);
       return this;
     }
 
@@ -376,6 +395,7 @@ public final class BytecodeChunk {
           parameterCount,
           new ArrayList<>(parameterNames),
           new ArrayList<>(localNames),
+          new ArrayList<>(localBindings),
           new ArrayList<>(lineNumbers),
           new ArrayList<>(columnNumbers),
           true);

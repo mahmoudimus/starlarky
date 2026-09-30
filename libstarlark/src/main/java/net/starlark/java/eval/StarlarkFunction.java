@@ -181,17 +181,8 @@ public final class StarlarkFunction implements UserDefinedFunction {
    * Reports whether this function has a residual keyword arguments parameter, {@code def
    * f(**kwargs)}.
    */
-  @Override
   public boolean hasKwargs() {
     return rfn.hasKwargs();
-  }
-
-  /**
-   * Returns the number of keyword-only parameters.
-   */
-  @Override
-  public int numKeywordOnlyParams() {
-    return rfn.numKeywordOnlyParams();
   }
 
   /** Returns the location of the function's defining identifier. */

@@ -88,13 +88,15 @@ public final class BytecodeCompiler {
 
     // Add local variable names for better error messages
     for (Resolver.Binding binding : func.getLocals()) {
-      String localName = binding.getName() != null ? binding.getName() : "?";
-      compiler.builder.addLocalName(localName);
+      compiler.builder.addLocal(binding);
     }
 
     // Compile function body
     for (Statement stmt : func.getBody()) {
       compiler.compileStatement(stmt);
+      if (func.isToplevel()) {
+        compiler.emitPostAssign(stmt);
+      }
     }
 
     // Ensure function returns (implicit None return)
@@ -105,6 +107,25 @@ public final class BytecodeCompiler {
     compiler.patchJumps();
 
     return compiler.builder.build();
+  }
+
+  /**
+   * After an unindented top-level assignment or def, reports each bound global to the thread's
+   * post-assign hook, as {@code Eval.execStatements} does (Bazel's "export" semantics).
+   */
+  private void emitPostAssign(Statement stmt) {
+    Iterable<Identifier> ids;
+    if (stmt instanceof AssignmentStatement assign) {
+      ids = Identifier.boundIdentifiers(assign.getLHS());
+    } else if (stmt instanceof DefStatement def) {
+      ids = ImmutableList.of(def.getIdentifier());
+    } else {
+      return;
+    }
+    for (Identifier id : ids) {
+      visit(id);
+      emitAt(id.getStartLocation(), Opcode.POST_ASSIGN, builder.addConstant(id.getName()));
+    }
   }
 
   /**
@@ -156,6 +177,13 @@ public final class BytecodeCompiler {
       case LOAD:
         visit((LoadStatement) stmt);
         break;
+      case TYPE_ALIAS:
+      case VAR:
+        // Without a type table (typed programs run on the tree-walker), these have no runtime
+        // effect, as in Eval.
+        break;
+      default:
+        throw new UnsupportedOperationException("Unsupported statement: " + stmt.kind());
     }
   }
 
@@ -205,6 +233,10 @@ public final class BytecodeCompiler {
         break;
       case LAMBDA:
         visit((LambdaExpression) expr);
+        break;
+      case CAST:
+        // cast(T, x) evaluates to x.
+        compileExpression(((CastExpression) expr).getValue());
         break;
       case BYTE_LITERAL:
         builder.emit(
@@ -443,8 +475,7 @@ public final class BytecodeCompiler {
 
       // Add local variable names for better error messages
       for (Resolver.Binding binding : resolvedFunc.getLocals()) {
-        String localName = binding.getName() != null ? binding.getName() : "?";
-        funcCompiler.builder.addLocalName(localName);
+        funcCompiler.builder.addLocal(binding);
       }
     }
 
@@ -530,7 +561,7 @@ public final class BytecodeCompiler {
   public void visit(FlowStatement node) {
     int lineNum = getLine(node);
 
-    switch (node.getKind()) {
+    switch (node.getFlowKind()) {
       case BREAK:
         if (breakContinueStack.isEmpty()) {
           throw new IllegalStateException("break outside loop");

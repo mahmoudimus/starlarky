@@ -443,7 +443,7 @@ public final class Starlark {
       return "dict";
     } else if (c.equals(NoneType.class)) {
       return "NoneType";
-    } else if (c.equals(StarlarkFunction.class) || c.equals(BytecodeFunction.class)) {
+    } else if (c.equals(StarlarkFunction.class)) {
       return "function";
     } else if (c.equals(RangeList.class)) {
       return "range";
@@ -1012,18 +1012,6 @@ public final class Starlark {
   }
 
   /**
-   * Wraps an unexpected exception thrown while executing top-level code outside {@link #fastcall},
-   * as {@link #fastcall} does for callees. The thread's stack must still include that code's frame.
-   */
-  static RuntimeException uncheckedEval(RuntimeException ex, StarlarkThread thread) {
-    return ex instanceof UncheckedEvalException ? ex : new UncheckedEvalException(ex, thread);
-  }
-
-  static Error uncheckedEval(Error ex, StarlarkThread thread) {
-    return ex instanceof UncheckedEvalError ? ex : new UncheckedEvalError(ex, thread);
-  }
-
-  /**
    * Decorates an {@link Error} with its Starlark stack, to help maintainers locate problematic
    * source expressions.
    *
@@ -1333,36 +1321,6 @@ public final class Starlark {
    */
   public static Object execFileProgram(Program prog, Module module, StarlarkThread thread)
       throws EvalException, InterruptedException {
-    // Use bytecode interpreter if bytecode is available
-    if (prog.hasBytecode()) {
-      // The VM reads and writes the module's globals directly; predeclared and universal
-      // names are read separately (LOAD_BUILTIN) so that file-level bindings shadow them.
-      java.util.HashMap<String, Object> builtins = new java.util.HashMap<>(Starlark.UNIVERSE);
-      builtins.putAll(module.getPredeclaredBindings());
-      BytecodeGlobals globals = new BytecodeGlobals(module, builtins);
-
-      Object result;
-      try {
-        result = BytecodeVms.execute(
-            prog.getBytecode(),
-            thread,
-            globals,
-            prog.getFilename());
-        if (Boolean.getBoolean("debug.globals")) {
-          System.out.println("Bytecode execution completed successfully. Result: " + result);
-        }
-      } catch (Exception e) {
-        if (Boolean.getBoolean("debug.globals")) {
-          System.out.println("Bytecode execution failed: " + e.getMessage());
-          e.printStackTrace();
-        }
-        throw e;
-      }
-
-      return result;
-    }
-
-    // Fall back to tree-walking interpreter
     Resolver.Function rfn = prog.getResolvedFunction();
 
     // A given Module may be passed to execFileProgram multiple times in sequence,
@@ -1393,7 +1351,7 @@ public final class Starlark {
             /* defaultValues= */ Tuple.empty(),
             /* freevars= */ Tuple.empty(),
             thread.getNextIdentityToken());
-    Object result = Starlark.positionalOnlyCall(thread, toplevel);
+    Object result = BytecodeVms.execFile(prog, module, thread, toplevel); // VGS: bytecode VM
     if (prog.getTypeTable() != null) {
       // For globals that don't have a declared static type, we export the value's dynamic type.
       // We export the dynamic type of the value (rather than the inferred static type) because it's

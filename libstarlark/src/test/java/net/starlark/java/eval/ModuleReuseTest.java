@@ -44,7 +44,7 @@ public final class ModuleReuseTest {
   public void functionSeesLaterRebindingOfGlobal() throws Exception {
     Module module = Module.create();
     try (Mutability mu = Mutability.create("test")) {
-      StarlarkThread thread = new StarlarkThread(mu, StarlarkSemantics.DEFAULT);
+      StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
       exec(module, thread, "x = 1", "def f():", "  return x");
       exec(module, thread, "x = 2");
       exec(module, thread, "y = f()");
@@ -71,7 +71,7 @@ public final class ModuleReuseTest {
     Module module =
         Module.withPredeclared(StarlarkSemantics.DEFAULT, ImmutableMap.of("record", record));
     try (Mutability mu = Mutability.create("test")) {
-      StarlarkThread thread = new StarlarkThread(mu, StarlarkSemantics.DEFAULT);
+      StarlarkThread thread = StarlarkThread.createTransient(mu, StarlarkSemantics.DEFAULT);
       exec(module, thread, "record()", "def f():", "  record()", "f()");
     }
     assertThat(seen).containsExactly(module, module);

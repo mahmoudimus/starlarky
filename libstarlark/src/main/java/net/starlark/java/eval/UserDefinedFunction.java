@@ -50,13 +50,19 @@ public interface UserDefinedFunction extends StarlarkCallable {
   boolean hasKwargs();
 
   /**
-   * Returns the number of keyword-only parameters.
-   *
-   * <p>Keyword-only parameters are those that appear after *args or after a bare *.
+   * Returns the number of ordinary (non-residual, non-keyword-only) parameters. They come first in
+   * {@link #getParameterNames}.
    */
-  default int numKeywordOnlyParams() {
-    return 0;
-  }
+  int getNumOrdinaryParameters();
+
+  /**
+   * Returns the number of keyword-only parameters: those after *args or a bare *. They follow the
+   * ordinary parameters in {@link #getParameterNames}.
+   */
+  int getNumKeywordOnlyParameters();
+
+  /** Returns the function's identity token (see {@link SymbolGenerator}). */
+  SymbolGenerator.Symbol<?> getToken();
 
   /**
    * Returns the default value for the i-th parameter, or null if the parameter

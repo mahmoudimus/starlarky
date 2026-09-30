@@ -27,6 +27,9 @@ import net.starlark.java.eval.compiler.CompiledStarlarkLoader;
 import net.starlark.java.eval.compiler.JvmBytecodeGenerator;
 import net.starlark.java.eval.compiler.MultiTargetCompiler;
 import net.starlark.java.eval.compiler.WasmGenerator;
+import net.starlark.java.syntax.TypeContext;
+import net.starlark.java.syntax.TypeConstructor;
+import net.starlark.java.syntax.StarlarkType;
 import net.starlark.java.syntax.FileOptions;
 import net.starlark.java.syntax.ParserInput;
 import net.starlark.java.syntax.Resolver;
@@ -138,11 +141,34 @@ public class LarkyCompiledScript extends CompiledScript {
       // eval time, so any name that is not a universal builtin resolves as predeclared here.
       // Real resolution against the bindings happens again in eval().
       Module universe = Module.create();
-      Resolver.Module lenient = name -> {
-        try {
-          return universe.resolve(name);
-        } catch (Resolver.Module.Undefined e) {
-          return Resolver.Scope.PREDECLARED;
+      Resolver.Module lenient = new Resolver.Module() {
+        @Override
+        public Resolver.Scope resolve(String name, boolean resolveTypeSyntax) {
+          try {
+            return universe.resolve(name, resolveTypeSyntax);
+          } catch (Resolver.Module.Undefined e) {
+            return Resolver.Scope.PREDECLARED;
+          }
+        }
+
+        @Override
+        public StarlarkType getPredeclaredSymbolType(String name) {
+          return universe.getPredeclaredSymbolType(name);
+        }
+
+        @Override
+        public StarlarkType getUniversalSymbolType(String name) {
+          return universe.getUniversalSymbolType(name);
+        }
+
+        @Override
+        public TypeConstructor getTypeConstructor(String name) throws Resolver.Module.Undefined {
+          return universe.getTypeConstructor(name);
+        }
+
+        @Override
+        public TypeContext getTypeContext() {
+          return universe.getTypeContext();
         }
       };
       this.cachedProgram = Program.compileFile(file, lenient, /*enableBytecode=*/ true);
@@ -204,7 +230,7 @@ public class LarkyCompiledScript extends CompiledScript {
     try {
       // Create execution environment
       Mutability mutability = Mutability.create("larky");
-      StarlarkThread thread = new StarlarkThread(mutability, StarlarkSemantics.DEFAULT);
+      StarlarkThread thread = StarlarkThread.createTransient(mutability, StarlarkSemantics.DEFAULT);
 
       // Set up globals from bindings
       Map<String, Object> globals = new HashMap<>();

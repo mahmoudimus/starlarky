@@ -14,9 +14,11 @@
 
 package net.starlark.java.eval;
 
+import java.util.HashMap;
 import java.util.Map;
 import net.starlark.java.eval.compiler.BytecodeChunk;
 import net.starlark.java.eval.compiler.BytecodeTarget;
+import net.starlark.java.syntax.Program;
 
 /**
  * Dispatches file and function bodies to the VM selected by {@code -Dstarlark.bytecode.vm}, so
@@ -29,6 +31,33 @@ final class BytecodeVms {
   private static final BytecodeTarget VM = BytecodeTarget.configuredVm();
 
   /** Runs a file's top-level code. */
+  /**
+   * Runs a file's top-level code: on the bytecode VM if the program was compiled to bytecode,
+   * otherwise (or if it carries a type table, whose checks only the tree-walker enforces) by
+   * calling {@code toplevel}, as {@link Starlark#execFileProgram} does without the VM.
+   */
+  static Object execFile(
+      Program prog, Module module, StarlarkThread thread, StarlarkCallable toplevel)
+      throws EvalException, InterruptedException {
+    if (!prog.hasBytecode() || prog.getTypeTable() != null) {
+      return Starlark.positionalOnlyCall(thread, toplevel);
+    }
+    // The VM reads and writes the module's globals directly; predeclared and universal names are
+    // read separately (LOAD_BUILTIN) so that file-level bindings shadow them.
+    HashMap<String, Object> builtins = new HashMap<>(Starlark.UNIVERSE);
+    builtins.putAll(module.getPredeclaredBindings());
+    Object result =
+        execute(
+            prog.getBytecode(),
+            thread,
+            new BytecodeGlobals(module, builtins),
+            prog.getFilename());
+    if (Boolean.getBoolean("debug.globals")) {
+      System.out.println("Bytecode execution completed successfully. Result: " + result);
+    }
+    return result;
+  }
+
   static Object execute(
       BytecodeChunk chunk, StarlarkThread thread, Map<String, Object> globals, String filename)
       throws EvalException, InterruptedException {

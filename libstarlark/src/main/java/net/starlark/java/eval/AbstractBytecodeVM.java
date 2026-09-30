@@ -114,30 +114,37 @@ abstract class AbstractBytecodeVM {
 
   // ---- entry points ----
 
-  /** Runs a file's top-level code in a new {@link BytecodeToplevel} frame. */
+  /**
+   * Runs a file's top-level code in a new {@link BytecodeToplevel} frame. {@link
+   * Starlark#positionalOnlyCall} pushes the frame and wraps exceptions as it does for any callee.
+   */
   static Object runToplevel(AbstractBytecodeVM vm) throws EvalException, InterruptedException {
-    StarlarkThread thread = vm.thread;
-    thread.push(new BytecodeToplevel(vm.chunk.getName(), vm.filename, vm.globals));
-    try {
-      return vm.run();
-    } catch (EvalException ex) {
-      throw ex.ensureStack(thread);
-    } catch (RuntimeException ex) {
-      throw Starlark.uncheckedEval(ex, thread);
-    } catch (Error ex) {
-      throw Starlark.uncheckedEval(ex, thread);
-    } finally {
-      thread.pop();
-    }
+    return Starlark.positionalOnlyCall(
+        vm.thread, new BytecodeToplevel(vm.chunk.getName(), vm.filename, vm.globals, vm));
   }
 
-  /** Runs a function body whose frame is already pushed, starting from the given locals. */
+  /**
+   * Runs a function body whose frame is already pushed, starting from the given locals. {@code
+   * locals} is the frame's array (see {@code StarlarkThread.Frame.getLocals}); stores are written
+   * through to it so the debugger sees current values.
+   */
   final Object runWithLocals(Object[] locals) throws EvalException, InterruptedException {
     int n = Math.min(locals.length, chunk.getLocalCount());
     for (int i = 0; i < n; i++) {
       setLocal(i, locals[i]);
     }
+    frameLocals = locals;
     return run();
+  }
+
+  // The pushed frame's locals array, kept current for the debugger; null for top-level code.
+  private Object[] frameLocals;
+
+  private void storeLocal(int index, Object value) {
+    setLocal(index, value);
+    if (frameLocals != null && index < frameLocals.length) {
+      frameLocals[index] = value;
+    }
   }
 
   // ---- execution ----
@@ -285,7 +292,7 @@ abstract class AbstractBytecodeVM {
           case STORE_LOCAL:
             {
               int index = instr.getOperand1();
-              setLocal(index, pop());
+              storeLocal(index, pop());
             }
             break;
 
@@ -511,7 +518,8 @@ abstract class AbstractBytecodeVM {
                 dict.putEntry(key, value);
                 if (dict.size() == before) {
                   throw Starlark.errorf(
-                      "dictionary expression has duplicate key: %s", Starlark.repr(key));
+                      "dictionary expression has duplicate key: %s",
+                      Starlark.repr(key, thread.getSemantics()));
                 }
               }
               push(dict);
@@ -612,7 +620,7 @@ abstract class AbstractBytecodeVM {
 
               onCall();
               thread.frame(0).setLocation(currentLocation());
-              push(Starlark.fastcall(thread, function, positional, named));
+              push(call(function, positional, named));
             }
             break;
 
@@ -649,7 +657,7 @@ abstract class AbstractBytecodeVM {
 
               onCall();
               thread.frame(0).setLocation(currentLocation());
-              push(Starlark.fastcall(thread, function, positional.toArray(), named));
+              push(call(function, positional.toArray(), named));
             }
             break;
 
@@ -766,6 +774,23 @@ abstract class AbstractBytecodeVM {
             // No operation
             break;
 
+          case POST_ASSIGN:
+            {
+              // Mirrors Eval.execStatements' hook for Bazel's "export" semantics.
+              Object value = pop();
+              if (thread.postAssignHook != null) {
+                String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
+                if (value instanceof StarlarkFunction func) {
+                  func.export(thread, name);
+                } else if (value instanceof BytecodeFunction func) {
+                  func.export(thread, name);
+                } else {
+                  thread.postAssignHook.assign(name, currentLocation(), value);
+                }
+              }
+            }
+            break;
+
           case MAKE_FUNCTION:
             {
               // Get function descriptor from constant pool
@@ -796,6 +821,8 @@ abstract class AbstractBytecodeVM {
                       descriptor.getLocalCount(),
                       filename);
 
+              function.setToken(thread.getNextIdentityToken());
+
               // Set globals so the function can access them when called
               function.setGlobals(globals);
 
@@ -820,7 +847,7 @@ abstract class AbstractBytecodeVM {
                       // Create a new cell wrapping the value
                       capturedCells[i] = new BytecodeFunction.Cell(local);
                       // Also update locals so subsequent access sees the cell
-                      setLocal(info.index, capturedCells[i]);
+                      storeLocal(info.index, capturedCells[i]);
                     }
                   }
                 }
@@ -898,6 +925,30 @@ abstract class AbstractBytecodeVM {
   }
 
   /** Appends the entries of a {@code **kwargs} argument to {@code named}, as Eval.evalCall does. */
+
+  /**
+   * Calls {@code function} with already-evaluated arguments ({@code named} holds name/value pairs),
+   * the way {@code Eval.evalCall} does: positional-only calls go through {@link
+   * Starlark#positionalOnlyCall}, all others through the callee's {@link
+   * StarlarkCallable.ArgumentProcessor}.
+   */
+  private Object call(Object function, Object[] positional, Object[] named)
+      throws EvalException, InterruptedException {
+    StarlarkCallable callable = Starlark.getStarlarkCallable(thread, function);
+    if (named.length == 0) {
+      return Starlark.positionalOnlyCall(thread, callable, positional);
+    }
+    StarlarkCallable.ArgumentProcessor argumentProcessor =
+        Starlark.requestArgumentProcessor(thread, callable);
+    for (Object value : positional) {
+      argumentProcessor.addPositionalArg(value);
+    }
+    for (int i = 0; i < named.length; i += 2) {
+      argumentProcessor.addNamedArg((String) named[i], named[i + 1]);
+    }
+    return Starlark.callViaArgumentProcessor(thread, callable, argumentProcessor);
+  }
+
   private static Object[] appendStarStar(Object[] named, Object value) throws EvalException {
     if (!(value instanceof Dict)) {
       throw Starlark.errorf("argument after ** must be a dict, not %s", Starlark.type(value));

@@ -597,7 +597,7 @@ public final class FunctionTest {
 
         g = _f
         """);
-    var f = (StarlarkFunction) ev.lookup("_f");
+    var f = (UserDefinedFunction) ev.lookup("_f");
     assertThat(ev.lookup("g")).isSameInstanceAs(f); // "g" is an alias for "_f"
 
     SymbolGenerator.Symbol<?> id = f.getToken();
@@ -614,7 +614,7 @@ public final class FunctionTest {
         x = lambda v: "--" + v
         y = x
         """);
-    var x = (StarlarkFunction) ev.lookup("x");
+    var x = (UserDefinedFunction) ev.lookup("x");
     assertThat(ev.lookup("y")).isSameInstanceAs(x); // "y" is an alias for "x"
 
     SymbolGenerator.Symbol<?> id = x.getToken();
@@ -630,7 +630,7 @@ public final class FunctionTest {
         x = (lambda v: v + 1,)
         """);
     var x = (Tuple) ev.lookup("x");
-    var lambda = (StarlarkFunction) x.get(0);
+    var lambda = (UserDefinedFunction) x.get(0);
 
     SymbolGenerator.Symbol<?> id = lambda.getToken();
     assertThat(id.isGlobal()).isFalse();
@@ -644,7 +644,7 @@ public final class FunctionTest {
         y = x[0]
         """);
     var x = (Tuple) ev.lookup("x");
-    var y = (StarlarkFunction) ev.lookup("y");
+    var y = (UserDefinedFunction) ev.lookup("y");
     assertThat(x.get(0)).isSameInstanceAs(y);
 
     SymbolGenerator.Symbol<?> id = y.getToken();

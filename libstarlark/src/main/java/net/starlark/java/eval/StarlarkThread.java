@@ -306,17 +306,8 @@ public final class StarlarkThread {
             env.put(binding.getName(), local);
           }
         }
-      } else if (fn instanceof BytecodeFunction) {
-        BytecodeFunction bcfn = (BytecodeFunction) fn;
-        java.util.List<String> localNames = bcfn.getChunk().getLocalNames();
-        if (locals != null) {
-          for (int i = 0; i < locals.length && i < localNames.size(); i++) {
-            Object local = locals[i];
-            if (local != null) {
-              env.put(localNames.get(i), local);
-            }
-          }
-        }
+      } else if (fn instanceof BytecodeFunction bcfn) {
+        bcfn.addDebugLocals(env, locals, loc);
       }
       // TODO(https://github.com/bazelbuild/bazel/issues/24931): comprehension variables are stored
       // in their enclosing function's locals, and can shadow the function's proper local variables
