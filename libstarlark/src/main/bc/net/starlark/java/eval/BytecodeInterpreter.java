@@ -153,7 +153,7 @@ public final class BytecodeInterpreter extends AbstractBytecodeVM {
   }
 
   @Override
-  protected Object getLocal(int index) {
+  public Object getLocal(int index) {
     return locals[index];
   }
 

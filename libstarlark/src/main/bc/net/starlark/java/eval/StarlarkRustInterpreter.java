@@ -153,7 +153,7 @@ public final class StarlarkRustInterpreter extends AbstractBytecodeVM {
   }
 
   @Override
-  protected Object getLocal(int index) {
+  public Object getLocal(int index) {
     return slots[index];
   }
 

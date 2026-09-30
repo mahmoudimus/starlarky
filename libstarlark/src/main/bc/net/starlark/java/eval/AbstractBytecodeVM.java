@@ -14,16 +14,11 @@
 
 package net.starlark.java.eval;
 
-import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Iterables;
-import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import net.starlark.java.eval.compiler.BytecodeChunk;
-import net.starlark.java.eval.compiler.FunctionDescriptor;
 import net.starlark.java.eval.compiler.Instruction;
 import net.starlark.java.eval.compiler.Opcode;
 import net.starlark.java.syntax.Location;
@@ -37,21 +32,7 @@ import net.starlark.java.syntax.TokenKind;
  * hooks ({@link #binaryOp}, {@link #getAttr}, {@link #onInstruction}, ...). Because the opcode
  * semantics live here, every VM behaves the same way as the tree-walker.
  */
-abstract class AbstractBytecodeVM {
-
-  /**
-   * Wrapper for a Module with its name, used during load statement execution to provide better
-   * error messages.
-   */
-  private static final class ModuleWithName {
-    final Module module;
-    final String moduleName;
-
-    ModuleWithName(Module module, String moduleName) {
-      this.module = module;
-      this.moduleName = moduleName;
-    }
-  }
+abstract class AbstractBytecodeVM implements BcFrame {
 
   protected final BytecodeChunk chunk;
   protected final StarlarkThread thread;
@@ -76,6 +57,38 @@ abstract class AbstractBytecodeVM {
     this.ip = 0;
   }
 
+  // ---- BcFrame ----
+
+  @Override
+  public StarlarkThread thread() {
+    return thread;
+  }
+
+  @Override
+  public BytecodeChunk chunk() {
+    return chunk;
+  }
+
+  @Override
+  public Map<String, Object> globals() {
+    return globals;
+  }
+
+  @Override
+  public String filename() {
+    return filename;
+  }
+
+  @Override
+  public Tuple freevars() {
+    return freevars;
+  }
+
+  @Override
+  public Map<Iterator<?>, Object> iterators() {
+    return iteratorToIterable;
+  }
+
   // ---- storage, provided by each VM ----
 
   protected abstract void push(Object value) throws EvalException;
@@ -89,7 +102,7 @@ abstract class AbstractBytecodeVM {
 
   protected abstract int stackSize();
 
-  protected abstract Object getLocal(int index);
+  public abstract Object getLocal(int index);
 
   protected abstract void setLocal(int index, Object value);
 
@@ -120,7 +133,7 @@ abstract class AbstractBytecodeVM {
    */
   static Object runToplevel(AbstractBytecodeVM vm) throws EvalException, InterruptedException {
     return Starlark.positionalOnlyCall(
-        vm.thread, new BytecodeToplevel(vm.chunk.getName(), vm.filename, vm.globals, vm));
+        vm.thread, new BytecodeToplevel(vm.chunk.getName(), vm.filename, vm.globals, vm::run));
   }
 
   /**
@@ -140,7 +153,8 @@ abstract class AbstractBytecodeVM {
   // The pushed frame's locals array, kept current for the debugger; null for top-level code.
   private Object[] frameLocals;
 
-  private void storeLocal(int index, Object value) {
+  @Override
+  public void storeLocal(int index, Object value) {
     setLocal(index, value);
     if (frameLocals != null && index < frameLocals.length) {
       frameLocals[index] = value;
@@ -150,28 +164,19 @@ abstract class AbstractBytecodeVM {
   // ---- execution ----
 
   /** Creates a Location object for the current instruction. */
-  protected final Location currentLocation() {
+  @Override
+  public final Location currentLocation() {
     int lineNum = Math.max(0, chunk.getLineNumber(ip));
     return Location.fromFileLineColumn(filename, lineNum, chunk.getColumnNumber(ip));
   }
 
-  /** Records the current instruction as the error location of the current frame. */
   private EvalException withLocation(EvalException ex) {
-    if (!thread.getCallStack().isEmpty()) {
-      thread.frame(0).setErrorLocation(currentLocation());
-    }
-    return ex.ensureStack(thread);
+    return BcOps.withLocation(this, ex);
   }
 
-  private static final TokenKind[] TOKEN_KINDS = TokenKind.values();
 
-  /** Checks the step limit, thread interrupt and expiry, as Eval does per statement and loop. */
   private void checkpoint() throws EvalException, InterruptedException {
-    thread.checkInterrupt();
-    if (thread.steps >= thread.stepLimit) {
-      throw new EvalException("Starlark computation cancelled: too many steps");
-    }
-    thread.checkExpired();
+    BcOps.checkpoint(thread);
   }
 
   final Object run() throws EvalException, InterruptedException {
@@ -285,16 +290,7 @@ abstract class AbstractBytecodeVM {
           case LOAD_LOCAL:
             {
               int index = instr.getOperand1();
-              Object value = getLocal(index);
-              if (value == null) {
-                // Get the variable name from the chunk's local names
-                String varName = "?";
-                if (index < chunk.getLocalNames().size()) {
-                  varName = chunk.getLocalNames().get(index);
-                }
-                throw Starlark.errorf("local variable '%s' is referenced before assignment.", varName);
-              }
-              push(value);
+              push(BcOps.checkLocal(this, getLocal(index), index));
             }
             break;
 
@@ -306,63 +302,31 @@ abstract class AbstractBytecodeVM {
             break;
 
           case LOAD_GLOBAL:
-            {
-              String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-              Object value = globals.get(name);
-              if (value == null) {
-                throw Starlark.errorf(
-                    "global variable '%s' is referenced before assignment.", name);
-              }
-              push(value);
-            }
+            push(BcOps.loadGlobal(this, (String) chunk.getConstantPool().getConstant(instr.getOperand1())));
             break;
 
           case LOAD_BUILTIN:
-            push(BytecodeGlobals.lookupBuiltin(
-                globals, (String) chunk.getConstantPool().getConstant(instr.getOperand1())));
+            push(BcOps.loadBuiltin(this, (String) chunk.getConstantPool().getConstant(instr.getOperand1())));
             break;
 
           case STORE_GLOBAL:
-            {
-              String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-              globals.put(name, pop());
-            }
+            BcOps.storeGlobal(this, (String) chunk.getConstantPool().getConstant(instr.getOperand1()), pop());
             break;
 
           case LOAD_FREE:
-            {
-              // LOAD_FREE loads a value from a captured free variable (closure cell)
-              int index = instr.getOperand1();
-              BytecodeFunction.Cell cell = (BytecodeFunction.Cell) freevars.get(index);
-              push(cell.x);
-            }
+            push(BcOps.loadFree(this, instr.getOperand1()));
             break;
 
           case STORE_FREE:
-            {
-              // STORE_FREE stores a value into a captured free variable (closure cell)
-              int index = instr.getOperand1();
-              BytecodeFunction.Cell cell = (BytecodeFunction.Cell) freevars.get(index);
-              cell.x = pop();
-            }
+            BcOps.storeFree(this, instr.getOperand1(), pop());
             break;
 
           case LOAD_CELL:
-            {
-              // LOAD_CELL loads a value from a cell in locals (for CELL scope variables)
-              int index = instr.getOperand1();
-              BytecodeFunction.Cell cell = (BytecodeFunction.Cell) getLocal(index);
-              push(cell.x);
-            }
+            push(BcOps.loadCell(getLocal(instr.getOperand1())));
             break;
 
           case STORE_CELL:
-            {
-              // STORE_CELL stores a value into a cell in locals (for CELL scope variables)
-              int index = instr.getOperand1();
-              BytecodeFunction.Cell cell = (BytecodeFunction.Cell) getLocal(index);
-              cell.x = pop();
-            }
+            BcOps.storeCell(getLocal(instr.getOperand1()), pop());
             break;
 
           // Arithmetic
@@ -412,10 +376,9 @@ abstract class AbstractBytecodeVM {
 
           case INPLACE_OP:
             {
-              TokenKind op = TOKEN_KINDS[instr.getOperand1()];
               Object y = pop();
               Object x = pop();
-              push(Eval.inplaceBinaryOp(thread, op, x, y));
+              push(BcOps.inplace(this, instr.getOperand1(), x, y));
             }
             break;
 
@@ -469,7 +432,7 @@ abstract class AbstractBytecodeVM {
             {
               Object b = pop();
               Object a = pop();
-              push(Starlark.truth(a) && Starlark.truth(b));
+              push(BcOps.and(a, b));
             }
             break;
 
@@ -477,66 +440,29 @@ abstract class AbstractBytecodeVM {
             {
               Object b = pop();
               Object a = pop();
-              push(Starlark.truth(a) || Starlark.truth(b));
+              push(BcOps.or(a, b));
             }
             break;
 
           case NOT:
-            push(!Starlark.truth(pop()));
+            push(BcOps.not(pop()));
             break;
 
           // Collections
           case BUILD_LIST:
-            {
-              int count = instr.getOperand1();
-              List<Object> elements = new ArrayList<>(count);
-              for (int i = 0; i < count; i++) {
-                elements.add(0, pop()); // Reverse order
-              }
-              push(StarlarkList.copyOf(thread.mutability(), elements));
-            }
+            push(BcOps.buildList(this, popN(instr.getOperand1())));
             break;
 
           case BUILD_TUPLE:
-            {
-              int count = instr.getOperand1();
-              Object[] elements = new Object[count];
-              for (int i = count - 1; i >= 0; i--) {
-                elements[i] = pop();
-              }
-              push(Tuple.of(elements));
-            }
+            push(BcOps.buildTuple(popN(instr.getOperand1())));
             break;
 
           case BUILD_DICT:
-            {
-              int count = instr.getOperand1();
-              // Pop all key-value pairs from stack (they're in reverse order)
-              Object[] pairs = new Object[count * 2];
-              for (int i = count - 1; i >= 0; i--) {
-                pairs[i * 2 + 1] = pop(); // value
-                pairs[i * 2] = pop();     // key
-              }
-
-              // Build dict in correct order, checking for duplicates
-              Dict<Object, Object> dict = Dict.of(thread.mutability());
-              for (int i = 0; i < count; i++) {
-                Object key = pairs[i * 2];
-                Object value = pairs[i * 2 + 1];
-                int before = dict.size();
-                dict.putEntry(key, value);
-                if (dict.size() == before) {
-                  throw Starlark.errorf(
-                      "dictionary expression has duplicate key: %s",
-                      Starlark.repr(key, thread.getSemantics()));
-                }
-              }
-              push(dict);
-            }
+            push(BcOps.buildDict(this, popN(2 * instr.getOperand1())));
             break;
 
           case UNPACK_SEQUENCE:
-            for (Object elem : unpackSequence(pop(), instr.getOperand1())) {
+            for (Object elem : BcOps.unpack(pop(), instr.getOperand1())) {
               push(elem); // leftmost first, so the rightmost is on top of the stack
             }
             break;
@@ -546,17 +472,17 @@ abstract class AbstractBytecodeVM {
             {
               Object key = pop();
               Object object = pop();
-              push(EvalUtils.index(thread, object, key));
+              push(BcOps.index(this, object, key));
             }
             break;
 
           case STORE_INDEX:
             {
-              // Stack order: [value, object, key] (value pushed first by RHS, then object and key by LHS)
+              // Stack: [value, object, key] (value pushed first by the RHS, then the LHS parts)
               Object key = pop();
               Object object = pop();
               Object value = pop();
-              EvalUtils.setIndex(thread, object, key, value);
+              BcOps.setIndex(this, value, object, key);
             }
             break;
 
@@ -566,7 +492,7 @@ abstract class AbstractBytecodeVM {
               Object stop = pop();
               Object start = pop();
               Object object = pop();
-              push(Starlark.slice(thread.mutability(), object, start, stop, step));
+              push(BcOps.slice(this, object, start, stop, step));
             }
             break;
 
@@ -575,30 +501,19 @@ abstract class AbstractBytecodeVM {
             {
               String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
               Object object = pop();
-
-              // Special handling for ModuleWithName (used in load statements)
-              if (object instanceof ModuleWithName) {
-                ModuleWithName mwn = (ModuleWithName) object;
-                Object value = mwn.module.getGlobal(name);
-                if (value == null) {
-                  throw Starlark.errorf(
-                      "file '%s' does not contain symbol '%s'", mwn.moduleName, name);
-                }
-                push(value);
-              } else {
-                push(getAttr(object, name));
-              }
+              push(object instanceof BcOps.ModuleWithName
+                  ? BcOps.getattr(this, object, name)
+                  : getAttr(object, name));
             }
             break;
 
           case STORE_ATTR:
             {
-              // Stack layout: [value (TOS1), object (TOS)]
-              // Compiler pushes: RHS value first, then LHS object
+              // Stack: [value, object] (the RHS value first, then the LHS object)
               String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-              Object object = pop();  // TOS: the object to set field on
-              Object value = pop();   // TOS1: the value to store
-              EvalUtils.setField(object, name, value);
+              Object object = pop();
+              Object value = pop();
+              BcOps.setattr(value, object, name);
             }
             break;
 
@@ -606,30 +521,20 @@ abstract class AbstractBytecodeVM {
           case CALL:
             {
               // Stack: [function, pos1..posN, name1, value1, ..., nameK, valueK, (starstar)?]
-              // Arguments are passed to Starlark.fastcall in source order, as the tree-walker
-              // does, so that duplicate/unexpected keyword errors come from the callee.
+              // Arguments reach the callee in source order, as in the tree-walker, so duplicate
+              // and unexpected keyword errors come from the callee.
               int posArgs = instr.getOperand1();
               int encodedKwArgs = instr.getOperand2();
               boolean hasStarStar = (encodedKwArgs & 0x8000) != 0;
               int kwArgs = encodedKwArgs & 0x7FFF;
-
               Object starStar = hasStarStar ? pop() : null;
-              Object[] named = new Object[2 * kwArgs];
-              for (int i = named.length - 1; i >= 0; i--) {
-                named[i] = pop();
-              }
-              if (hasStarStar) {
-                named = appendStarStar(named, starStar);
-              }
-              Object[] positional = new Object[posArgs];
-              for (int i = posArgs - 1; i >= 0; i--) {
-                positional[i] = pop();
-              }
+              Object[] named = popN(2 * kwArgs);
+              Object[] positional = popN(posArgs);
               Object function = pop();
-
               onCall();
-              thread.frame(0).setLocation(currentLocation());
-              push(call(function, positional, named));
+              push(hasStarStar
+                  ? BcOps.callStarStar(this, function, positional, named, starStar)
+                  : BcOps.call(this, function, positional, named));
             }
             break;
 
@@ -639,34 +544,11 @@ abstract class AbstractBytecodeVM {
               int flags = instr.getOperand1();
               Object starStarArg = (flags & 2) != 0 ? pop() : null;
               Object starArg = (flags & 1) != 0 ? pop() : null;
-              Object kwDictObj = pop();
-              Object posListObj = pop();
+              Object kwDict = pop();
+              Object posList = pop();
               Object function = pop();
-
-              ArrayList<Object> positional = new ArrayList<>();
-              Iterables.addAll(positional, (Iterable<?>) posListObj);
-              if (starArg != null) {
-                if (!(starArg instanceof StarlarkIterable)) {
-                  throw Starlark.errorf(
-                      "argument after * must be an iterable, not %s", Starlark.type(starArg));
-                }
-                Iterables.addAll(positional, (Iterable<?>) starArg);
-              }
-
-              Dict<?, ?> kwDict = (Dict<?, ?>) kwDictObj;
-              Object[] named = new Object[2 * kwDict.size()];
-              int j = 0;
-              for (Map.Entry<?, ?> e : kwDict.entrySet()) {
-                named[j++] = e.getKey();
-                named[j++] = e.getValue();
-              }
-              if (starStarArg != null) {
-                named = appendStarStar(named, starStarArg);
-              }
-
               onCall();
-              thread.frame(0).setLocation(currentLocation());
-              push(call(function, positional.toArray(), named));
+              push(BcOps.callEx(this, function, posList, kwDict, starArg, starStarArg));
             }
             break;
 
@@ -704,79 +586,41 @@ abstract class AbstractBytecodeVM {
 
           // Iteration
           case GET_ITER:
-            {
-              Object iterable = pop();
-
-              // Check if strings are forbidden in this context (comprehensions)
-              if (iterable instanceof String) {
-                throw withLocation(new EvalException("type 'string' is not iterable"));
-              }
-
-              // toIterable() will throw an error if the object is not iterable
-              Iterable<?> starlarkIterable;
-              try {
-                starlarkIterable = Starlark.toIterable(iterable);
-              } catch (EvalException e) {
-                throw withLocation(e);
-              }
-              Iterator<?> iterator = starlarkIterable.iterator();
-              // Track mutations on the iterable during iteration
-              EvalUtils.addIterator(iterable);
-              iteratorToIterable.put(iterator, iterable); // Store mapping for cleanup later
-              push(iterator);
-            }
+            push(BcOps.getIter(this, pop()));
             break;
 
           case FOR_ITER:
-            checkpoint();
             {
-              @SuppressWarnings("unchecked")
-              Iterator<Object> iterator = (Iterator<Object>) peek();
-              if (!iterator.hasNext()) {
-                // Iterator exhausted, jump to end of loop
-                // Note: Don't pop or cleanup here - END_FOR will handle it
+              Object iterator = peek();
+              if (!BcOps.hasNext(this, iterator)) {
+                // Exhausted: jump to END_FOR, which pops the iterator and releases its lock.
                 ip = instr.getOperand1() - 1;
               } else {
                 onIteration();
-                push(iterator.next());
+                push(BcOps.next(iterator));
               }
             }
             break;
 
           case END_FOR:
-            {
-              // Pop the iterator and remove the iteration lock
-              @SuppressWarnings("unchecked")
-              Iterator<Object> iterator = (Iterator<Object>) pop();
-              Object iterable = iteratorToIterable.remove(iterator);
-              if (iterable != null) {
-                EvalUtils.removeIterator(iterable);
-              }
-            }
+            BcOps.endFor(this, pop());
             break;
 
           case LIST_APPEND:
             {
-              // LIST_APPEND(i) pops value from top of stack and appends it to list at stack[-i]
-              // The offset is relative to stack BEFORE the pop
-              int offset = instr.getOperand1();
-              @SuppressWarnings("unchecked")
-              StarlarkList<Object> list = (StarlarkList<Object>) stackGet(offset);
-              Object value = pop();
-              list.addElement(value);
+              // LIST_APPEND(i): append TOS to the list at stack[-i] (offset before the pop).
+              Object list = stackGet(instr.getOperand1());
+              BcOps.listAppend(list, pop());
             }
             break;
 
           case DICT_ADD:
             {
-              // DICT_ADD(i) pops value and key from stack, adds to dict at stack[-i]
-              // The offset is relative to stack BEFORE the pops
-              int offset = instr.getOperand1();
-              @SuppressWarnings("unchecked")
-              Dict<Object, Object> dict = (Dict<Object, Object>) stackGet(offset);
+              // DICT_ADD(i): add TOS1: TOS to the dict at stack[-i] (offset before the pops).
+              Object dict = stackGet(instr.getOperand1());
               Object value = pop();
               Object key = pop();
-              dict.putEntry(key, value);
+              BcOps.dictAdd(dict, key, value);
             }
             break;
 
@@ -785,109 +629,21 @@ abstract class AbstractBytecodeVM {
             break;
 
           case POST_ASSIGN:
-            {
-              // Mirrors Eval.execStatements' hook for Bazel's "export" semantics.
-              Object value = pop();
-              if (thread.postAssignHook != null) {
-                String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-                if (value instanceof StarlarkFunction func) {
-                  func.export(thread, name);
-                } else if (value instanceof BytecodeFunction func) {
-                  func.export(thread, name);
-                } else {
-                  thread.postAssignHook.assign(name, currentLocation(), value);
-                }
-              }
-            }
+            BcOps.postAssign(
+                this, (String) chunk.getConstantPool().getConstant(instr.getOperand1()), pop());
             break;
 
           case MAKE_FUNCTION:
             {
-              // Get function descriptor from constant pool
-              FunctionDescriptor descriptor =
-                  (FunctionDescriptor) chunk.getConstantPool().getConstant(instr.getOperand1());
-
-              // Get number of defaults from operand2
-              int numDefaults = instr.getOperand2();
-
-              // Pop default values from stack (in reverse order - last default is on top)
-              Object[] defaultsArray = new Object[numDefaults];
-              for (int i = numDefaults - 1; i >= 0; i--) {
-                defaultsArray[i] = pop();
-              }
-              Tuple defaultValues = Tuple.wrap(defaultsArray);
-
-              // Create BytecodeFunction with full signature info
-              BytecodeFunction function =
-                  new BytecodeFunction(
-                      descriptor.getName(),
-                      descriptor.getLocation(),
-                      descriptor.getChunk(),
-                      descriptor.getParameterNames(),
-                      descriptor.hasVarargs(),
-                      descriptor.hasKwargs(),
-                      descriptor.getNumKeywordOnlyParams(),
-                      defaultValues,
-                      descriptor.getLocalCount(),
-                      filename);
-
-              function.setToken(thread.getNextIdentityToken());
-
-              // Set globals so the function can access them when called
-              function.setGlobals(globals);
-
-              // Set cell indices so the function knows which locals to wrap in Cells
-              function.setCellIndices(descriptor.getCellIndices());
-
-              // Capture free variables for closures
-              ImmutableList<FunctionDescriptor.FreevarInfo> freevarInfos = descriptor.getFreevarInfos();
-              if (!freevarInfos.isEmpty()) {
-                Object[] capturedCells = new Object[freevarInfos.size()];
-                for (int i = 0; i < freevarInfos.size(); i++) {
-                  FunctionDescriptor.FreevarInfo info = freevarInfos.get(i);
-                  if (info.isFromEnclosingFreevars) {
-                    // Get from enclosing function's freevars
-                    capturedCells[i] = freevars.get(info.index);
-                  } else {
-                    // Get from current locals (it should be a Cell)
-                    Object local = getLocal(info.index);
-                    if (local instanceof BytecodeFunction.Cell) {
-                      capturedCells[i] = local;
-                    } else {
-                      // Create a new cell wrapping the value
-                      capturedCells[i] = new BytecodeFunction.Cell(local);
-                      // Also update locals so subsequent access sees the cell
-                      storeLocal(info.index, capturedCells[i]);
-                    }
-                  }
-                }
-                function.setFreevars(Tuple.wrap(capturedCells));
-              }
-
-              push(function);
+              Object descriptor = chunk.getConstantPool().getConstant(instr.getOperand1());
+              Object[] defaults = popN(instr.getOperand2());
+              push(BcOps.makeFunction(this, descriptor, defaults));
             }
             break;
 
           case LOAD_MODULE:
-            {
-              // Get module name from constant pool
-              String moduleName = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-
-              // Get the loader from the thread
-              StarlarkThread.Loader loader = thread.getLoader();
-              if (loader == null) {
-                throw Starlark.errorf("load statements may not be executed in this thread");
-              }
-
-              // Load the module
-              Module module = loader.load(moduleName);
-              if (module == null) {
-                throw Starlark.errorf("module '%s' not found", moduleName);
-              }
-
-              // Push the module with its name onto the stack (for better error messages)
-              push(new ModuleWithName(module, moduleName));
-            }
+            push(BcOps.loadModule(
+                this, (String) chunk.getConstantPool().getConstant(instr.getOperand1())));
             break;
 
           default:
@@ -905,10 +661,7 @@ abstract class AbstractBytecodeVM {
     } finally {
       // Release iteration locks of loops left by return or by an exception, as the
       // tree-walker's finally blocks do. END_FOR has already released loops that completed.
-      for (Object iterable : iteratorToIterable.values()) {
-        EvalUtils.removeIterator(iterable);
-      }
-      iteratorToIterable.clear();
+      BcOps.releaseIterators(this);
     }
     // Other exceptions propagate unchanged, as in the tree-walker: Starlark.fastcall already
     // reports failures inside callees as UncheckedEvalException.
@@ -920,60 +673,12 @@ abstract class AbstractBytecodeVM {
     push(binaryOp(op, x, y));
   }
 
-  /** Checks {@code x} for an n-element sequence assignment, as Eval.assignSequence does. */
-  static Iterable<?> unpackSequence(Object x, int count) throws EvalException {
-    int n = Starlark.len(x);
-    if (n < 0 || x instanceof String) { // strings are not iterable
-      throw Starlark.errorf(
-          "got '%s' in sequence assignment (want %d-element sequence)", Starlark.type(x), count);
+  /** Pops {@code n} values, returning them deepest first. */
+  private Object[] popN(int n) throws EvalException {
+    Object[] values = new Object[n];
+    for (int i = n - 1; i >= 0; i--) {
+      values[i] = pop();
     }
-    if (n != count) {
-      throw Starlark.errorf(
-          "too %s values to unpack (got %d, want %d)", n < count ? "few" : "many", n, count);
-    }
-    return Starlark.toIterable(x);
-  }
-
-  /** Appends the entries of a {@code **kwargs} argument to {@code named}, as Eval.evalCall does. */
-
-  /**
-   * Calls {@code function} with already-evaluated arguments ({@code named} holds name/value pairs),
-   * the way {@code Eval.evalCall} does: positional-only calls go through {@link
-   * Starlark#positionalOnlyCall}, all others through the callee's {@link
-   * StarlarkCallable.ArgumentProcessor}.
-   */
-  private Object call(Object function, Object[] positional, Object[] named)
-      throws EvalException, InterruptedException {
-    checkpoint();
-    StarlarkCallable callable = Starlark.getStarlarkCallable(thread, function);
-    if (named.length == 0) {
-      return Starlark.positionalOnlyCall(thread, callable, positional);
-    }
-    StarlarkCallable.ArgumentProcessor argumentProcessor =
-        Starlark.requestArgumentProcessor(thread, callable);
-    for (Object value : positional) {
-      argumentProcessor.addPositionalArg(value);
-    }
-    for (int i = 0; i < named.length; i += 2) {
-      argumentProcessor.addNamedArg((String) named[i], named[i + 1]);
-    }
-    return Starlark.callViaArgumentProcessor(thread, callable, argumentProcessor);
-  }
-
-  private static Object[] appendStarStar(Object[] named, Object value) throws EvalException {
-    if (!(value instanceof Dict)) {
-      throw Starlark.errorf("argument after ** must be a dict, not %s", Starlark.type(value));
-    }
-    Dict<?, ?> kwargs = (Dict<?, ?>) value;
-    int j = named.length;
-    named = Arrays.copyOf(named, j + 2 * kwargs.size());
-    for (Map.Entry<?, ?> e : kwargs.entrySet()) {
-      if (!(e.getKey() instanceof String)) {
-        throw Starlark.errorf("keywords must be strings, not %s", Starlark.type(e.getKey()));
-      }
-      named[j++] = e.getKey();
-      named[j++] = e.getValue();
-    }
-    return named;
+    return values;
   }
 }

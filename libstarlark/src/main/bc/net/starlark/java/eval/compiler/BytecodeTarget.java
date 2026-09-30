@@ -160,7 +160,8 @@ public enum BytecodeTarget {
       return INTERPRETER;
     }
     BytecodeTarget target = fromId(id);
-    if (target == null || target.isCodeGenerator()) {
+    // JVM is also an execution mode: chunks are compiled to JVM methods (JvmBytecodeCompiler).
+    if (target == null || (target.isCodeGenerator() && target != JVM)) {
       throw new IllegalArgumentException("starlark.bytecode.vm: not an interpreter target: " + id);
     }
     return target;

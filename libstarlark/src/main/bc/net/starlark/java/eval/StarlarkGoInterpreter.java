@@ -184,7 +184,7 @@ public final class StarlarkGoInterpreter extends AbstractBytecodeVM {
   }
 
   @Override
-  protected Object getLocal(int index) {
+  public Object getLocal(int index) {
     return locals[index];
   }
 
