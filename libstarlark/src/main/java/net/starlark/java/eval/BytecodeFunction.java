@@ -20,6 +20,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import javax.annotation.Nullable;
 import net.starlark.java.eval.compiler.BytecodeChunk;
 import net.starlark.java.spelling.SpellChecker;
 import net.starlark.java.syntax.Location;
@@ -205,6 +206,12 @@ public final class BytecodeFunction implements UserDefinedFunction {
     return globals;
   }
 
+  /** Returns the module in which this function was defined, if known. */
+  @Nullable
+  public Module getModule() {
+    return BytecodeGlobals.moduleOf(globals);
+  }
+
   public void setFreevars(Tuple freevars) {
     this.freevars = freevars;
   }
@@ -273,7 +280,7 @@ public final class BytecodeFunction implements UserDefinedFunction {
     fr.locals = locals;
 
     // Execute the function body bytecode with the processed locals and captured free variables
-    return BytecodeInterpreter.executeWithLocals(
+    return BytecodeVms.executeWithLocals(
         chunk, thread, locals, globals, filename, getFreevars());
   }
 

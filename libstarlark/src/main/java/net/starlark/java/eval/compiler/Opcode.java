@@ -27,9 +27,12 @@ public enum Opcode {
   POP(0),           // Pop top value from stack
   DUP(0),           // Duplicate top of stack
   SWAP(0),          // Swap top two stack values
+  DUP_TOP_TWO(0),   // [a, b] -> [a, b, a, b]
+  ROT_THREE(0),     // [a, b, c] -> [c, a, b]
 
   // Constants and literals
   LOAD_CONST(1),    // Push constant from constant pool (operand: index)
+  LOAD_BYTES(1),    // Push a new bytes value (operand1: constant index of the byte[])
   LOAD_NONE(0),     // Push None
   LOAD_TRUE(0),     // Push True
   LOAD_FALSE(0),    // Push False
@@ -39,6 +42,7 @@ public enum Opcode {
   STORE_LOCAL(1),   // Store to local variable (operand: slot index)
   LOAD_GLOBAL(1),   // Load global variable (operand: name index)
   STORE_GLOBAL(1),  // Store to global variable (operand: name index)
+  LOAD_BUILTIN(1),  // Load a predeclared or universal name (operand1: name constant index)
   LOAD_FREE(1),     // Load free variable from closure's freevars tuple (operand: index)
   STORE_FREE(1),    // Store to free variable in closure's freevars tuple (operand: index)
   LOAD_CELL(1),     // Load from cell in locals (operand: local slot index)
@@ -77,6 +81,7 @@ public enum Opcode {
   BIT_NOT(0),       // ~
   LEFT_SHIFT(0),    // <<
   RIGHT_SHIFT(0),   // >>
+  INPLACE_OP(1),    // x op= y (operand1: TokenKind ordinal of the binary operator)
 
   // Collections
   BUILD_LIST(1),    // Build list (operand: count of elements on stack)

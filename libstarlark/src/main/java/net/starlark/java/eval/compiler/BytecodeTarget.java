@@ -140,8 +140,32 @@ public enum BytecodeTarget {
   }
 
   /**
+   * Returns true if this target produces an output artifact via {@link BytecodeBackend#generate}.
+   * Interpreter targets execute a {@link BytecodeChunk} directly and have no serialized form.
+   */
+  public boolean isCodeGenerator() {
+    return this == JVM || this == WASM;
+  }
+
+  /**
    * Returns the target for the given ID, or null if not found.
    */
+  /**
+   * Returns the VM that runs bytecode, from {@code -Dstarlark.bytecode.vm} (a target id such as
+   * {@code starlark-go}); defaults to {@link #INTERPRETER}.
+   */
+  public static BytecodeTarget configuredVm() {
+    String id = System.getProperty("starlark.bytecode.vm");
+    if (id == null || id.isEmpty()) {
+      return INTERPRETER;
+    }
+    BytecodeTarget target = fromId(id);
+    if (target == null || target.isCodeGenerator()) {
+      throw new IllegalArgumentException("starlark.bytecode.vm: not an interpreter target: " + id);
+    }
+    return target;
+  }
+
   public static BytecodeTarget fromId(String id) {
     for (BytecodeTarget target : values()) {
       if (target.id.equals(id)) {

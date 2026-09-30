@@ -97,6 +97,11 @@ public final class Program {
     try {
       return BytecodeCompiler.compileFunction(body);
     } catch (Exception e) {
+      // -Dstarlark.bytecode.strict=true turns the fallback into a failure, so test runs
+      // actually exercise the bytecode path instead of silently using the tree-walker.
+      if (Boolean.getBoolean("starlark.bytecode.strict")) {
+        throw new IllegalStateException("Bytecode compilation failed: " + e.getMessage(), e);
+      }
       // If bytecode compilation fails, fall back to interpreted mode
       // This ensures backward compatibility
       System.err.println("Warning: Bytecode compilation failed: " + e.getMessage());
@@ -255,24 +260,7 @@ public final class Program {
    */
   public static Program compileFile(StarlarkFile file, Resolver.Module env, boolean enableBytecode)
       throws SyntaxError.Exception {
-    Resolver.resolveFile(file, env);
-    if (!file.ok()) {
-      throw new SyntaxError.Exception(file.errors());
-    }
-
-    // Extract load statements.
-    ImmutableList.Builder<String> loads = ImmutableList.builder();
-    ImmutableList.Builder<Location> loadLocations = ImmutableList.builder();
-    for (Statement stmt : file.getStatements()) {
-      if (stmt instanceof LoadStatement) {
-        LoadStatement load = (LoadStatement) stmt;
-        String module = load.getImport().getValue();
-        loads.add(module);
-        loadLocations.add(load.getImport().getLocation());
-      }
-    }
-
-    return new Program(file.getResolvedFunction(), loads.build(), loadLocations.build(), enableBytecode);
+    return compileFile(file, env, /* loader= */ null, enableBytecode);
   }
 
   /**

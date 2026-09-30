@@ -206,6 +206,10 @@ public final class BytecodeCompiler {
       case LAMBDA:
         visit((LambdaExpression) expr);
         break;
+      case BYTE_LITERAL:
+        builder.emit(
+            Opcode.LOAD_BYTES, builder.addConstant(((ByteLiteral) expr).getValue()), getLine(expr));
+        break;
       default:
         throw new UnsupportedOperationException("Unsupported expression: " + expr.kind());
     }
@@ -217,49 +221,43 @@ public final class BytecodeCompiler {
     int lineNum = getLine(node);
 
     if (node.isAugmented()) {
-      // Augmented assignment: x += y becomes x = x + y
-      // 1. Load LHS value
-      compileExpression(node.getLHS());
-      // 2. Load RHS value
-      compileExpression(node.getRHS());
-      // 3. Apply the binary operation
-      Opcode binOp = getOpcodeForAugmentedOp(node.getOperator());
-      builder.emit(binOp, lineNum);
-      // 4. Store to LHS
-      compileLValue(node.getLHS());
+      // x op= y: the LHS operands are evaluated once, and INPLACE_OP applies the
+      // in-place semantics (list += list extends, dict |= dict merges).
+      Expression lhs = node.getLHS();
+      int opIndex = node.getOperator().ordinal();
+      Location opLoc = node.getOperatorLocation();
+      if (lhs instanceof Identifier) {
+        compileExpression(lhs);                               // [x]
+        compileExpression(node.getRHS());                     // [x, y]
+        emitAt(opLoc, Opcode.INPLACE_OP, opIndex);            // [z]
+        storeVariable((Identifier) lhs);
+      } else if (lhs instanceof IndexExpression) {
+        IndexExpression idx = (IndexExpression) lhs;
+        compileExpression(idx.getObject());                   // [obj]
+        compileExpression(idx.getKey());                      // [obj, key]
+        builder.emit(Opcode.DUP_TOP_TWO, lineNum);            // [obj, key, obj, key]
+        emitAt(opLoc, Opcode.INDEX);                          // [obj, key, x]
+        compileExpression(node.getRHS());                     // [obj, key, x, y]
+        emitAt(opLoc, Opcode.INPLACE_OP, opIndex);            // [obj, key, z]
+        builder.emit(Opcode.ROT_THREE, lineNum);              // [z, obj, key]
+        emitAt(opLoc, Opcode.STORE_INDEX);
+      } else if (lhs instanceof DotExpression) {
+        DotExpression dot = (DotExpression) lhs;
+        int nameIndex = builder.addConstant(dot.getField().getName());
+        compileExpression(dot.getObject());                   // [obj]
+        builder.emit(Opcode.DUP, lineNum);                    // [obj, obj]
+        emitAt(dot.getDotLocation(), Opcode.LOAD_ATTR, nameIndex);  // [obj, x]
+        compileExpression(node.getRHS());                     // [obj, x, y]
+        emitAt(opLoc, Opcode.INPLACE_OP, opIndex);            // [obj, z]
+        builder.emit(Opcode.SWAP, lineNum);                   // [z, obj]
+        emitAt(dot.getDotLocation(), Opcode.STORE_ATTR, nameIndex);
+      } else {
+        throw new UnsupportedOperationException("cannot perform augmented assignment on " + lhs);
+      }
     } else {
       // Regular assignment: compile RHS, store to LHS
       compileExpression(node.getRHS());
-      compileLValue(node.getLHS());
-    }
-  }
-
-  private Opcode getOpcodeForAugmentedOp(TokenKind op) {
-    switch (op) {
-      case PLUS_EQUALS:
-        return Opcode.ADD;
-      case MINUS_EQUALS:
-        return Opcode.SUBTRACT;
-      case STAR_EQUALS:
-        return Opcode.MULTIPLY;
-      case SLASH_EQUALS:
-        return Opcode.DIVIDE;
-      case SLASH_SLASH_EQUALS:
-        return Opcode.FLOOR_DIV;
-      case PERCENT_EQUALS:
-        return Opcode.MODULO;
-      case PIPE_EQUALS:
-        return Opcode.BIT_OR;
-      case AMPERSAND_EQUALS:
-        return Opcode.BIT_AND;
-      case CARET_EQUALS:
-        return Opcode.BIT_XOR;
-      case GREATER_GREATER_EQUALS:
-        return Opcode.RIGHT_SHIFT;
-      case LESS_LESS_EQUALS:
-        return Opcode.LEFT_SHIFT;
-      default:
-        throw new UnsupportedOperationException("Unsupported augmented operator: " + op);
+      compileLValue(node.getLHS(), node.getOperatorLocation());
     }
   }
 
@@ -329,7 +327,7 @@ public final class BytecodeCompiler {
     emitJump(Opcode.FOR_ITER, breakLabel, lineNum);
 
     // Assign to loop variable
-    compileLValue(node.getVars());
+    compileLValue(node.getVars(), node.getStartLocation());
 
     // Execute loop body
     for (Statement stmt : node.getBody()) {
@@ -353,18 +351,41 @@ public final class BytecodeCompiler {
   }
 
   public void visit(DefStatement node) {
-    int lineNum = getLine(node);
-
     Identifier id = node.getIdentifier();
-    String funcName = id.getName();
-    Location funcLocation = id.getStartLocation();
+    emitMakeFunction(
+        id.getName(),
+        id.getStartLocation(),
+        node.getParameters(),
+        node.getResolvedFunction(),
+        node.getBody(),
+        getLine(node));
+    storeVariable(id);
+  }
 
+  public void visit(LambdaExpression node) {
     Resolver.Function resolvedFunc = node.getResolvedFunction();
+    emitMakeFunction(
+        "lambda",
+        resolvedFunc.getLocation(),
+        node.getParameters(),
+        resolvedFunc,
+        resolvedFunc.getBody(),  // a single `return <body>` statement
+        getLine(node));
+  }
+
+  /** Compiles a function body and emits MAKE_FUNCTION, leaving the function on the stack. */
+  private void emitMakeFunction(
+      String funcName,
+      Location funcLocation,
+      List<Parameter> params,
+      Resolver.Function resolvedFunc,
+      List<Statement> body,
+      int lineNum) {
 
     // Extract parameter names from resolved function (includes *args/**kwargs names)
     ImmutableList<String> paramNames = resolvedFunc != null
         ? resolvedFunc.getParameterNames()
-        : extractParamNames(node.getParameters());
+        : extractParamNames(params);
 
     // Get function signature info
     boolean hasVarargs = resolvedFunc != null && resolvedFunc.hasVarargs();
@@ -376,7 +397,6 @@ public final class BytecodeCompiler {
     // Default values are pushed onto the stack and consumed by MAKE_FUNCTION
     // The defaults tuple covers parameters from first-with-default to last-ordinary-param.
     // Required parameters in that range get MANDATORY sentinel.
-    List<Parameter> params = node.getParameters();
     int numDefaults = 0;
     boolean seenFirstDefault = false;
     boolean seenStar = false;  // Track if we're past *args
@@ -429,7 +449,7 @@ public final class BytecodeCompiler {
     }
 
     // Compile function body statements
-    for (Statement stmt : node.getBody()) {
+    for (Statement stmt : body) {
       funcCompiler.compileStatement(stmt);
     }
 
@@ -484,9 +504,6 @@ public final class BytecodeCompiler {
     int descriptorIndex = builder.addConstant(descriptor);
     // MAKE_FUNCTION takes descriptorIndex as operand1, numDefaults as operand2
     builder.emit(Opcode.MAKE_FUNCTION, descriptorIndex, numDefaults, lineNum);
-
-    // Store function in variable
-    storeVariable(id);
   }
 
   private ImmutableList<String> extractParamNames(List<Parameter> params) {
@@ -627,14 +644,14 @@ public final class BytecodeCompiler {
     compileExpression(node.getY());
 
     Opcode opcode = getOpcodeForBinaryOp(node.getOperator());
-    builder.emit(opcode, lineNum);
+    emitAt(node.getOperatorLocation(), opcode);
   }
 
   public void visit(UnaryOperatorExpression node) {
     compileExpression(node.getX());
 
     Opcode opcode = getOpcodeForUnaryOp(node.getOperator());
-    builder.emit(opcode, getLine(node));
+    emitAt(node.getStartLocation(), opcode);
   }
 
   public void visit(ListExpression node) {
@@ -689,7 +706,9 @@ public final class BytecodeCompiler {
 
     if (hasStar || hasStarStar) {
       // Use CALL_EX for complex calls with *args or **kwargs
-      // Stack layout: [func, pos_list, star_arg_or_None, kw_dict, starstar_arg_or_None]
+      // Stack layout: [func, pos_list, kw_dict, star_arg?, starstar_arg?], evaluated in
+      // source order (positional < keyword < *args < **kwargs); the flags operand says
+      // which of the optional values are present.
 
       // Collect arguments by type
       List<Expression> posArgs = new ArrayList<>();
@@ -721,13 +740,6 @@ public final class BytecodeCompiler {
       }
       builder.emit(Opcode.BUILD_LIST, posArgs.size(), lineNum);
 
-      // Push *args value or None
-      if (starArg != null) {
-        compileExpression(starArg);
-      } else {
-        builder.emit(Opcode.LOAD_NONE, lineNum);
-      }
-
       // Build keyword args as a dict
       for (Argument.Keyword kwArg : kwArgs) {
         int nameIndex = builder.addConstant(kwArg.getName());
@@ -736,14 +748,14 @@ public final class BytecodeCompiler {
       }
       builder.emit(Opcode.BUILD_DICT, kwArgs.size(), lineNum);
 
-      // Push **kwargs value or None
+      if (starArg != null) {
+        compileExpression(starArg);
+      }
       if (starStarArg != null) {
         compileExpression(starStarArg);
-      } else {
-        builder.emit(Opcode.LOAD_NONE, lineNum);
       }
 
-      // Flags encode what's on stack (for future optimization, not currently used)
+      // Flags: 1 = *args present, 2 = **kwargs present
       int flags = (starArg != null ? 1 : 0) | (starStarArg != null ? 2 : 0);
       builder.emitWithColumn(Opcode.CALL_EX, flags, callLineNum, callColNum);
 
@@ -777,7 +789,7 @@ public final class BytecodeCompiler {
 
     // Load attribute
     int nameIndex = builder.addConstant(node.getField().getName());
-    builder.emit(Opcode.LOAD_ATTR, nameIndex, lineNum);
+    emitAt(node.getDotLocation(), Opcode.LOAD_ATTR, nameIndex);
   }
 
   public void visit(IndexExpression node) {
@@ -787,7 +799,7 @@ public final class BytecodeCompiler {
     compileExpression(node.getObject());
     compileExpression(node.getKey());
 
-    builder.emit(Opcode.INDEX, lineNum);
+    emitAt(node.getLbracketLocation(), Opcode.INDEX);
   }
 
   public void visit(SliceExpression node) {
@@ -815,7 +827,7 @@ public final class BytecodeCompiler {
       builder.emit(Opcode.LOAD_NONE, lineNum);
     }
 
-    builder.emit(Opcode.SLICE, lineNum);
+    emitAt(node.getLbracketLocation(), Opcode.SLICE);
   }
 
   public void visit(ConditionalExpression node) {
@@ -872,7 +884,7 @@ public final class BytecodeCompiler {
         // Stack: [result_dict, ...iterators..., key, value]
         // DICT_ADD pops key and value, adds to dict at stack[-(stackDepth+2)]
         // stackDepth accounts for iterators, +2 for key and value
-        builder.emit(Opcode.DICT_ADD, stackDepth + 3, getLine(comp));
+        emitAt(body.getColonLocation(), Opcode.DICT_ADD, stackDepth + 3);
       } else {
         // List comprehension: [expr for ...]
         Expression body = (Expression) comp.getBody();
@@ -915,7 +927,7 @@ public final class BytecodeCompiler {
       emitJump(Opcode.FOR_ITER, breakLabel, lineNum);
 
       // Assign loop variable (pops value from stack)
-      compileLValue(forClause.getVars());
+      compileLValue(forClause.getVars(), forClause.getStartLocation());
 
       // Process remaining clauses with increased stack depth (iterator added)
       compileClauses(comp, clauseIndex + 1, stackDepth + 1);
@@ -945,29 +957,26 @@ public final class BytecodeCompiler {
     }
   }
 
-  public void visit(LambdaExpression node) {
-    // Lambdas are simplified functions
-    int lineNum = getLine(node);
-
-    // TODO: Compile lambda body as a separate function
-    builder.emit(Opcode.MAKE_FUNCTION, 0, lineNum);
-  }
-
   // Helper methods
 
-  private void compileLValue(Expression lhs) {
+  /**
+   * Stores the value on top of the stack to {@code lhs}. {@code errorLoc} is where the
+   * tree-walker reports assignment errors in this context (the '=' of an assignment, or the
+   * start of a for statement or comprehension clause).
+   */
+  private void compileLValue(Expression lhs, Location errorLoc) {
     if (lhs instanceof Identifier) {
       storeVariable((Identifier) lhs);
     } else if (lhs instanceof IndexExpression) {
       IndexExpression idx = (IndexExpression) lhs;
       compileExpression(idx.getObject());
       compileExpression(idx.getKey());
-      builder.emit(Opcode.STORE_INDEX, getLine(lhs));
+      emitAt(errorLoc, Opcode.STORE_INDEX);
     } else if (lhs instanceof DotExpression) {
       DotExpression dot = (DotExpression) lhs;
       compileExpression(dot.getObject());
       int nameIndex = builder.addConstant(dot.getField().getName());
-      builder.emit(Opcode.STORE_ATTR, nameIndex, getLine(lhs));
+      emitAt(dot.getDotLocation(), Opcode.STORE_ATTR, nameIndex);
     } else if (lhs instanceof ListExpression) {
       // Tuple/list unpacking: a, b = [1, 2]
       // The RHS value is already on the stack
@@ -975,13 +984,13 @@ public final class BytecodeCompiler {
       int count = list.getElements().size();
 
       // Emit UNPACK_SEQUENCE to unpack the sequence into N values on stack
-      builder.emit(Opcode.UNPACK_SEQUENCE, count, getLine(lhs));
+      emitAt(errorLoc, Opcode.UNPACK_SEQUENCE, count);
 
       // Now assign each unpacked value to the corresponding lvalue
       // UNPACK_SEQUENCE pushes elements in forward order, so rightmost is on top
       // We assign from right to left (popping from stack)
       for (int i = count - 1; i >= 0; i--) {
-        compileLValue(list.getElements().get(i));
+        compileLValue(list.getElements().get(i), errorLoc);
       }
     } else {
       throw new IllegalArgumentException("Invalid lvalue: " + lhs);
@@ -995,26 +1004,27 @@ public final class BytecodeCompiler {
     if (binding == null) {
       // Unresolved - treat as global
       int nameIndex = builder.addConstant(id.getName());
-      builder.emit(Opcode.LOAD_GLOBAL, nameIndex, lineNum);
+      emitAt(id.getStartLocation(), Opcode.LOAD_GLOBAL, nameIndex);
       return;
     }
 
     switch (binding.getScope()) {
       case LOCAL:
-        builder.emit(Opcode.LOAD_LOCAL, binding.getIndex(), lineNum);
+        emitAt(id.getStartLocation(), Opcode.LOAD_LOCAL, binding.getIndex());
         break;
       case GLOBAL:
+        emitAt(id.getStartLocation(), Opcode.LOAD_GLOBAL, builder.addConstant(id.getName()));
+        break;
       case PREDECLARED:
       case UNIVERSAL:
-        int nameIndex = builder.addConstant(id.getName());
-        builder.emit(Opcode.LOAD_GLOBAL, nameIndex, lineNum);
+        emitAt(id.getStartLocation(), Opcode.LOAD_BUILTIN, builder.addConstant(id.getName()));
         break;
       case FREE:
-        builder.emit(Opcode.LOAD_FREE, binding.getIndex(), lineNum);
+        emitAt(id.getStartLocation(), Opcode.LOAD_FREE, binding.getIndex());
         break;
       case CELL:
         // Cell variables are locals shared with nested functions
-        builder.emit(Opcode.LOAD_CELL, binding.getIndex(), lineNum);
+        emitAt(id.getStartLocation(), Opcode.LOAD_CELL, binding.getIndex());
         break;
     }
   }
@@ -1082,6 +1092,14 @@ public final class BytecodeCompiler {
         return Opcode.NOT_IN;
       case PIPE:
         return Opcode.BIT_OR;
+      case AMPERSAND:
+        return Opcode.BIT_AND;
+      case CARET:
+        return Opcode.BIT_XOR;
+      case LESS_LESS:
+        return Opcode.LEFT_SHIFT;
+      case GREATER_GREATER:
+        return Opcode.RIGHT_SHIFT;
       default:
         throw new UnsupportedOperationException("Unsupported binary operator: " + op);
     }
@@ -1145,6 +1163,23 @@ public final class BytecodeCompiler {
   private int getLine(Node node) {
     Location loc = node.getStartLocation();
     return loc != null ? loc.line() : -1;
+  }
+
+  /** Emits an instruction whose runtime errors are reported at {@code loc}, like the tree-walker. */
+  private void emitAt(Location loc, Opcode opcode, int... operands) {
+    switch (operands.length) {
+      case 0:
+        builder.emitWithColumn(opcode, loc.line(), loc.column());
+        break;
+      case 1:
+        builder.emitWithColumn(opcode, operands[0], loc.line(), loc.column());
+        break;
+      case 2:
+        builder.emitWithColumn(opcode, operands[0], operands[1], loc.line(), loc.column());
+        break;
+      default:
+        throw new IllegalArgumentException("too many operands for " + opcode);
+    }
   }
 
   private int getColumn(Node node) {

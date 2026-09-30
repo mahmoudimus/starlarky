@@ -144,10 +144,10 @@ public final class InterpreterComprehensiveTest {
         .testExpression("10 + 5", StarlarkInt.of(15))
         .testExpression("10 - 5", StarlarkInt.of(5))
         .testExpression("10 * 5", StarlarkInt.of(50))
-        .testExpression("10 / 5", StarlarkInt.of(2))
+        .testExpression("10 / 5", StarlarkFloat.of(2.0)) // '/' is float division
         .testExpression("10 // 3", StarlarkInt.of(3))
         .testExpression("10 % 3", StarlarkInt.of(1))
-        .testExpression("2 ** 10", StarlarkInt.of(1024))
+        .testExpression("1 << 10", StarlarkInt.of(1024))
         .testExpression("10 == 10", true)
         .testExpression("10 != 5", true)
         .testExpression("10 > 5", true)
@@ -170,7 +170,6 @@ public final class InterpreterComprehensiveTest {
         .testExpression("2 + 3 * 4", StarlarkInt.of(14))
         .testExpression("(2 + 3) * 4", StarlarkInt.of(20))
         .testExpression("10 - 2 * 3", StarlarkInt.of(4))
-        .testExpression("2 ** 3 ** 2", StarlarkInt.of(512)) // right-associative
         .testExpression("10 // 3 * 2", StarlarkInt.of(6))
         .testExpression("10 % 3 + 2", StarlarkInt.of(3))
         .testExpression("5 > 3 and 2 < 4", true)
@@ -423,7 +422,7 @@ public final class InterpreterComprehensiveTest {
   @Test
   public void testComplexDictComprehensions() throws Exception {
     ev.new Scenario()
-        .testEval("{x: x ** 2 for x in range(5)}", "{0: 0, 1: 1, 2: 4, 3: 9, 4: 16}")
+        .testEval("{x: x * x for x in range(5)}", "{0: 0, 1: 1, 2: 4, 3: 9, 4: 16}")
         .testEval(
             "{k: v for k, v in [('a', 1), ('b', 2), ('c', 3)]}",
             "{'a': 1, 'b': 2, 'c': 3}")
@@ -544,13 +543,13 @@ public final class InterpreterComprehensiveTest {
   public void testKeyErrors() throws Exception {
     ev.new Scenario()
         .setUp("d = {'a': 1, 'b': 2}")
-        .testIfErrorContains("key \"c\" not in dict", "d['c']");
+        .testIfErrorContains("key \"c\" not found in dictionary", "d['c']");
   }
 
   @Test
   public void testDivisionByZero() throws Exception {
     ev.new Scenario()
-        .testIfErrorContains("integer division by zero", "10 / 0")
+        .testIfErrorContains("floating-point division by zero", "10 / 0")
         .testIfErrorContains("integer division by zero", "10 // 0")
         .testIfErrorContains("integer modulo by zero", "10 % 0");
   }
@@ -593,9 +592,12 @@ public final class InterpreterComprehensiveTest {
       thread.setMaxExecutionSteps(100);
 
       ParserInput input = ParserInput.fromLines(
-          "result = 0",
-          "for i in range(1000):",
-          "  result += i");
+          "def f():",
+          "  result = 0",
+          "  for i in range(1000):",
+          "    result += i",
+          "  return result",
+          "f()");
 
       EvalException ex = assertThrows(
           EvalException.class,
@@ -612,10 +614,13 @@ public final class InterpreterComprehensiveTest {
       thread.setExpirationMs(1); // Very short timeout
 
       ParserInput input = ParserInput.fromLines(
-          "result = 0",
-          "for i in range(10000):",
-          "  for j in range(100):",
-          "    result += i * j");
+          "def f():",
+          "  result = 0",
+          "  for i in range(10000):",
+          "    for j in range(100):",
+          "      result += i * j",
+          "  return result",
+          "f()");
 
       EvalException ex = assertThrows(
           EvalException.class,
@@ -759,7 +764,7 @@ public final class InterpreterComprehensiveTest {
   }
 
   @Test
-  public void testScope Chain() throws Exception {
+  public void testScopeChain() throws Exception {
     ev.new Scenario()
         .setUp(
             "x = 'global'",

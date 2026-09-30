@@ -14,17 +14,11 @@
 
 package net.starlark.java.eval;
 
-import com.google.common.collect.ImmutableList;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import net.starlark.java.eval.compiler.*;
-import net.starlark.java.syntax.Location;
-import net.starlark.java.syntax.TokenKind;
+import net.starlark.java.eval.compiler.BytecodeChunk;
 
 /**
  * A stack-based bytecode interpreter for Starlark.
@@ -49,36 +43,10 @@ import net.starlark.java.syntax.TokenKind;
  *   <li>The complete call stack showing function calls leading to the error
  * </ul>
  */
-public final class BytecodeInterpreter {
+public final class BytecodeInterpreter extends AbstractBytecodeVM {
 
-  /**
-   * Wrapper for a Module with its name, used during load statement execution
-   * to provide better error messages.
-   */
-  private static final class ModuleWithName {
-    final Module module;
-    final String moduleName;
-
-    ModuleWithName(Module module, String moduleName) {
-      this.module = module;
-      this.moduleName = moduleName;
-    }
-  }
-
-  private final BytecodeChunk chunk;
-  private final StarlarkThread thread;
   private final Object[] locals;
-  private final Map<String, Object> globals;
-  private final List<Object> stack;
-  private final String filename;
-  private final Map<Iterator<?>, Object> iteratorToIterable; // Track iterables for mutation checking
-  private final Tuple freevars; // Free variables (cells from enclosing functions)
-  private int ip; // Instruction pointer
-
-  private BytecodeInterpreter(
-      BytecodeChunk chunk, StarlarkThread thread, Map<String, Object> globals, String filename) {
-    this(chunk, thread, globals, filename, Tuple.empty());
-  }
+  private final List<Object> stack = new ArrayList<>();
 
   private BytecodeInterpreter(
       BytecodeChunk chunk,
@@ -86,90 +54,32 @@ public final class BytecodeInterpreter {
       Map<String, Object> globals,
       String filename,
       Tuple freevars) {
-    this.chunk = chunk;
-    this.thread = thread;
+    super(chunk, thread, globals, filename, freevars);
     this.locals = new Object[chunk.getLocalCount()];
-    this.globals = globals != null ? globals : new HashMap<>();
-    this.stack = new ArrayList<>();
-    this.filename = filename != null ? filename : "<bytecode>";
-    this.iteratorToIterable = new HashMap<>();
-    this.freevars = freevars != null ? freevars : Tuple.empty();
-    this.ip = 0;
   }
 
-  /**
-   * Executes a bytecode chunk and returns the result.
-   *
-   * @param chunk the bytecode to execute
-   * @param thread the Starlark thread context
-   * @param globals the global variable namespace
-   * @return the result of execution
-   * @throws EvalException if execution fails
-   * @throws InterruptedException if execution is interrupted
-   */
+  /** Executes a file's top-level bytecode and returns the result. */
   public static Object execute(
       BytecodeChunk chunk, StarlarkThread thread, Map<String, Object> globals)
       throws EvalException, InterruptedException {
     return execute(chunk, thread, globals, null);
   }
 
-  /**
-   * Executes a bytecode chunk and returns the result.
-   *
-   * @param chunk the bytecode to execute
-   * @param thread the Starlark thread context
-   * @param globals the global variable namespace
-   * @param filename the source filename for error reporting
-   * @return the result of execution
-   * @throws EvalException if execution fails
-   * @throws InterruptedException if execution is interrupted
-   */
+  /** Executes a file's top-level bytecode and returns the result. */
   public static Object execute(
       BytecodeChunk chunk, StarlarkThread thread, Map<String, Object> globals, String filename)
       throws EvalException, InterruptedException {
-    // Create a synthetic callable for the module-level code
-    StarlarkCallable moduleCallable = new ModuleCallable(chunk.getName(), filename);
-
-    thread.push(moduleCallable);
-    try {
-      BytecodeInterpreter interpreter = new BytecodeInterpreter(chunk, thread, globals, filename);
-      return interpreter.run();
-    } catch (EvalException ex) {
-      throw ex.ensureStack(thread);
-    } finally {
-      thread.pop();
-    }
+    return runToplevel(new BytecodeInterpreter(chunk, thread, globals, filename, null));
   }
 
-  /**
-   * Executes a bytecode chunk with arguments.
-   *
-   * @param chunk the bytecode to execute
-   * @param thread the Starlark thread context
-   * @param args the function arguments
-   * @param globals the global variable namespace
-   * @return the result of execution
-   * @throws EvalException if execution fails
-   * @throws InterruptedException if execution is interrupted
-   */
+  /** Executes a bytecode chunk with the given arguments bound to its first locals. */
   public static Object executeWithArgs(
       BytecodeChunk chunk, StarlarkThread thread, Object[] args, Map<String, Object> globals)
       throws EvalException, InterruptedException {
     return executeWithArgs(chunk, thread, args, globals, null);
   }
 
-  /**
-   * Executes a bytecode chunk with arguments.
-   *
-   * @param chunk the bytecode to execute
-   * @param thread the Starlark thread context
-   * @param args the function arguments
-   * @param globals the global variable namespace
-   * @param filename the source filename for error reporting
-   * @return the result of execution
-   * @throws EvalException if execution fails
-   * @throws InterruptedException if execution is interrupted
-   */
+  /** Executes a bytecode chunk with the given arguments bound to its first locals. */
   public static Object executeWithArgs(
       BytecodeChunk chunk,
       StarlarkThread thread,
@@ -177,33 +87,26 @@ public final class BytecodeInterpreter {
       Map<String, Object> globals,
       String filename)
       throws EvalException, InterruptedException {
-    BytecodeInterpreter interpreter = new BytecodeInterpreter(chunk, thread, globals, filename);
-
-    // Initialize local variables with arguments
-    int paramCount = Math.min(args.length, chunk.getParameterCount());
-    for (int i = 0; i < paramCount; i++) {
-      interpreter.locals[i] = args[i];
-    }
-
-    return interpreter.run();
+    return new BytecodeInterpreter(chunk, thread, globals, filename, null)
+        .runWithLocals(Arrays.copyOf(args, Math.min(args.length, chunk.getParameterCount())));
   }
 
   /**
-   * Executes a bytecode chunk with pre-processed local variables.
-   *
-   * <p>This is used by BytecodeFunction.fastcall() after argument processing has been done.
-   * The locals array contains the fully resolved parameter values including defaults,
-   * *args tuple, and **kwargs dict as appropriate.
-   *
-   * @param chunk the bytecode to execute
-   * @param thread the Starlark thread context
-   * @param locals the pre-processed local variable values
-   * @param globals the global variable namespace
-   * @param filename the source filename for error reporting
-   * @return the result of execution
-   * @throws EvalException if execution fails
-   * @throws InterruptedException if execution is interrupted
+   * Executes a function body with pre-processed locals (see BytecodeFunction.fastcall) and the
+   * cells captured from enclosing functions.
    */
+  public static Object executeWithLocals(
+      BytecodeChunk chunk,
+      StarlarkThread thread,
+      Object[] locals,
+      Map<String, Object> globals,
+      String filename,
+      Tuple freevars)
+      throws EvalException, InterruptedException {
+    return new BytecodeInterpreter(chunk, thread, globals, filename, freevars).runWithLocals(locals);
+  }
+
+  /** Executes a function body with pre-processed locals and no free variables. */
   public static Object executeWithLocals(
       BytecodeChunk chunk,
       StarlarkThread thread,
@@ -214,963 +117,48 @@ public final class BytecodeInterpreter {
     return executeWithLocals(chunk, thread, locals, globals, filename, Tuple.empty());
   }
 
-  /**
-   * Executes a bytecode chunk with pre-processed local variables and free variables.
-   *
-   * <p>This is used by BytecodeFunction.fastcall() after argument processing has been done.
-   * The locals array contains the fully resolved parameter values including defaults,
-   * *args tuple, and **kwargs dict as appropriate. The freevars tuple contains cells
-   * captured from enclosing functions for closures.
-   *
-   * @param chunk the bytecode to execute
-   * @param thread the Starlark thread context
-   * @param locals the pre-processed local variable values
-   * @param globals the global variable namespace
-   * @param filename the source filename for error reporting
-   * @param freevars the captured free variables (cells) from enclosing functions
-   * @return the result of execution
-   * @throws EvalException if execution fails
-   * @throws InterruptedException if execution is interrupted
-   */
-  public static Object executeWithLocals(
-      BytecodeChunk chunk,
-      StarlarkThread thread,
-      Object[] locals,
-      Map<String, Object> globals,
-      String filename,
-      Tuple freevars)
-      throws EvalException, InterruptedException {
-    BytecodeInterpreter interpreter =
-        new BytecodeInterpreter(chunk, thread, globals, filename, freevars);
-
-    // Copy pre-processed locals directly
-    int localCount = Math.min(locals.length, interpreter.locals.length);
-    for (int i = 0; i < localCount; i++) {
-      interpreter.locals[i] = locals[i];
-    }
-
-    return interpreter.run();
-  }
-
-  /**
-   * Creates a Location object for the current instruction.
-   */
-  private Location currentLocation() {
-    int lineNum = chunk.getLineNumber(ip);
-    if (lineNum < 0) {
-      lineNum = 0;
-    }
-    int columnNum = chunk.getColumnNumber(ip);
-    return Location.fromFileLineColumn(filename, lineNum, columnNum);
-  }
-
-  /**
-   * Wraps an exception with location information from the current instruction.
-   */
-  private EvalException withLocation(EvalException ex) {
-    // Set the error location in the current frame
-    if (!thread.getCallStack().isEmpty()) {
-      thread.frame(0).setErrorLocation(currentLocation());
-    }
-    // The exception will get the full call stack from the thread when it propagates
-    return ex.ensureStack(thread);
-  }
-
-  /**
-   * Creates an EvalException with a formatted message and current location.
-   */
-  private EvalException error(String format, Object... args) throws EvalException {
-    String message = String.format(format, args);
-    return new EvalException(message);
-  }
-
-  private Object run() throws EvalException, InterruptedException {
-    List<Instruction> instructions = chunk.getInstructions();
-
-    // Debug: dump all instructions at start
-    if (Boolean.getBoolean("debug.bytecode")) {
-      System.out.println("=== BYTECODE CHUNK (" + instructions.size() + " instructions) ===");
-      for (int i = 0; i < instructions.size(); i++) {
-        Instruction instr = instructions.get(i);
-        System.out.printf("[%3d] %-20s", i, instr.getOpcode());
-        if (instr.getOpcode().getOperandCount() >= 1) {
-          System.out.printf(" %d", instr.getOperand1());
-        }
-        if (instr.getOpcode().getOperandCount() >= 2) {
-          System.out.printf(" %d", instr.getOperand2());
-        }
-        System.out.println();
-      }
-      System.out.println("=== EXECUTION ===");
-    }
-
-    try {
-      while (ip < instructions.size()) {
-        // Check for thread interruption
-        thread.checkInterrupt();
-
-        // Count execution steps and check limit
-        if (++thread.steps >= thread.stepLimit) {
-          throw new EvalException("Starlark computation cancelled: too many steps");
-        }
-
-        // Check expiration time
-        if (thread.isExpired()) {
-          throw new EvalException("Starlark computation cancelled: past expiration date");
-        }
-
-        Instruction instr = instructions.get(ip);
-        Opcode opcode = instr.getOpcode();
-
-        // Debug logging for bytecode execution
-        if (Boolean.getBoolean("debug.bytecode")) {
-          System.out.printf("[%3d] %-20s  stack=%d", ip, opcode, stack.size());
-          if (opcode.getOperandCount() >= 1) {
-            System.out.printf(" op1=%d", instr.getOperand1());
-          }
-          if (opcode.getOperandCount() >= 2) {
-            System.out.printf(" op2=%d", instr.getOperand2());
-          }
-          System.out.println();
-        }
-
-      // Execute instruction
-      switch (opcode) {
-        // Stack manipulation
-        case POP:
-          pop();
-          break;
-
-        case DUP:
-          push(peek());
-          break;
-
-        case SWAP:
-          {
-            Object a = pop();
-            Object b = pop();
-            push(a);
-            push(b);
-          }
-          break;
-
-        // Constants
-        case LOAD_CONST:
-          push(chunk.getConstantPool().getConstant(instr.getOperand1()));
-          break;
-
-        case LOAD_NONE:
-          push(Starlark.NONE);
-          break;
-
-        case LOAD_TRUE:
-          push(true);
-          break;
-
-        case LOAD_FALSE:
-          push(false);
-          break;
-
-        // Variables
-        case LOAD_LOCAL:
-          {
-            int index = instr.getOperand1();
-            Object value = locals[index];
-            if (value == null) {
-              // Get the variable name from the chunk's local names
-              String varName = "?";
-              if (index < chunk.getLocalNames().size()) {
-                varName = chunk.getLocalNames().get(index);
-              }
-              throw Starlark.errorf("local variable '%s' is referenced before assignment.", varName);
-            }
-            push(value);
-          }
-          break;
-
-        case STORE_LOCAL:
-          {
-            int index = instr.getOperand1();
-            locals[index] = pop();
-          }
-          break;
-
-        case LOAD_GLOBAL:
-          {
-            String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-            Object value = globals.get(name);
-            if (value == null) {
-              throw Starlark.errorf(
-                  "global variable '%s' is referenced before assignment.", name);
-            }
-            push(value);
-          }
-          break;
-
-        case STORE_GLOBAL:
-          {
-            String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-            globals.put(name, pop());
-          }
-          break;
-
-        case LOAD_FREE:
-          {
-            // LOAD_FREE loads a value from a captured free variable (closure cell)
-            int index = instr.getOperand1();
-            BytecodeFunction.Cell cell = (BytecodeFunction.Cell) freevars.get(index);
-            push(cell.x);
-          }
-          break;
-
-        case STORE_FREE:
-          {
-            // STORE_FREE stores a value into a captured free variable (closure cell)
-            int index = instr.getOperand1();
-            BytecodeFunction.Cell cell = (BytecodeFunction.Cell) freevars.get(index);
-            cell.x = pop();
-          }
-          break;
-
-        case LOAD_CELL:
-          {
-            // LOAD_CELL loads a value from a cell in locals (for CELL scope variables)
-            int index = instr.getOperand1();
-            BytecodeFunction.Cell cell = (BytecodeFunction.Cell) locals[index];
-            push(cell.x);
-          }
-          break;
-
-        case STORE_CELL:
-          {
-            // STORE_CELL stores a value into a cell in locals (for CELL scope variables)
-            int index = instr.getOperand1();
-            BytecodeFunction.Cell cell = (BytecodeFunction.Cell) locals[index];
-            cell.x = pop();
-          }
-          break;
-
-        // Arithmetic
-        case ADD:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.PLUS, a, b, thread));
-          break;
-
-        case SUBTRACT:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.MINUS, a, b, thread));
-          break;
-
-        case MULTIPLY:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.STAR, a, b, thread));
-          break;
-
-        case DIVIDE:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.SLASH, a, b, thread));
-          break;
-
-        case FLOOR_DIV:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.SLASH_SLASH, a, b, thread));
-          break;
-
-        case MODULO:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.PERCENT, a, b, thread));
-          break;
-
-        case NEGATE:
-          unaryOp(a -> EvalUtils.unaryOp(TokenKind.MINUS, a));
-          break;
-
-        case POSITIVE:
-          unaryOp(a -> EvalUtils.unaryOp(TokenKind.PLUS, a));
-          break;
-
-        // Comparison
-        case EQUAL:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.EQUALS_EQUALS, a, b, thread));
-          break;
-
-        case NOT_EQUAL:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.NOT_EQUALS, a, b, thread));
-          break;
-
-        case LESS:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.LESS, a, b, thread));
-          break;
-
-        case LESS_EQUAL:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.LESS_EQUALS, a, b, thread));
-          break;
-
-        case GREATER:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.GREATER, a, b, thread));
-          break;
-
-        case GREATER_EQUAL:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.GREATER_EQUALS, a, b, thread));
-          break;
-
-        case IN:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.IN, a, b, thread));
-          break;
-
-        case NOT_IN:
-          binaryOp((a, b) -> EvalUtils.binaryOp(TokenKind.NOT_IN, a, b, thread));
-          break;
-
-        // Logical
-        case AND:
-          {
-            Object b = pop();
-            Object a = pop();
-            push(Starlark.truth(a) && Starlark.truth(b));
-          }
-          break;
-
-        case OR:
-          {
-            Object b = pop();
-            Object a = pop();
-            push(Starlark.truth(a) || Starlark.truth(b));
-          }
-          break;
-
-        case NOT:
-          unaryOp(a -> !Starlark.truth(a));
-          break;
-
-        // Collections
-        case BUILD_LIST:
-          {
-            int count = instr.getOperand1();
-            List<Object> elements = new ArrayList<>(count);
-            for (int i = 0; i < count; i++) {
-              elements.add(0, pop()); // Reverse order
-            }
-            push(StarlarkList.copyOf(thread.mutability(), elements));
-          }
-          break;
-
-        case BUILD_TUPLE:
-          {
-            int count = instr.getOperand1();
-            Object[] elements = new Object[count];
-            for (int i = count - 1; i >= 0; i--) {
-              elements[i] = pop();
-            }
-            push(Tuple.of(elements));
-          }
-          break;
-
-        case BUILD_DICT:
-          {
-            int count = instr.getOperand1();
-            // Pop all key-value pairs from stack (they're in reverse order)
-            Object[] pairs = new Object[count * 2];
-            for (int i = count - 1; i >= 0; i--) {
-              pairs[i * 2 + 1] = pop(); // value
-              pairs[i * 2] = pop();     // key
-            }
-
-            // Build dict in correct order, checking for duplicates
-            Dict<Object, Object> dict = Dict.of(thread.mutability());
-            for (int i = 0; i < count; i++) {
-              Object key = pairs[i * 2];
-              Object value = pairs[i * 2 + 1];
-              int before = dict.size();
-              dict.putEntry(key, value);
-              if (dict.size() == before) {
-                throw Starlark.errorf(
-                    "dictionary expression has duplicate key: %s", Starlark.repr(key));
-              }
-            }
-            push(dict);
-          }
-          break;
-
-        case UNPACK_SEQUENCE:
-          {
-            int count = instr.getOperand1();
-            Object sequence = pop();
-
-            // Convert to iterable
-            Iterable<?> iterable = Starlark.toIterable(sequence);
-            List<Object> elements = new ArrayList<>();
-            for (Object elem : iterable) {
-              elements.add(elem);
-            }
-
-            // Check size matches
-            if (elements.size() != count) {
-              throw Starlark.errorf(
-                  "too %s values to unpack (expected %d, got %d)",
-                  elements.size() < count ? "few" : "many",
-                  count,
-                  elements.size());
-            }
-
-            // Push elements in forward order (leftmost first)
-            // This way the rightmost element is on top of stack
-            // For example, unpacking [1, 2] pushes 1 then 2, so stack = [1, 2] with 2 on top
-            // Then storing from right to left pops 2 for b, then 1 for a
-            // Debug logging
-            if (Boolean.getBoolean("debug.unpack")) {
-              System.out.println("UNPACK_SEQUENCE " + count + " from " + sequence + " -> " + elements);
-            }
-            for (int i = 0; i < count; i++) {
-              push(elements.get(i));
-            }
-          }
-          break;
-
-        // Indexing
-        case INDEX:
-          {
-            Object key = pop();
-            Object object = pop();
-            push(EvalUtils.index(thread, object, key));
-          }
-          break;
-
-        case STORE_INDEX:
-          {
-            // Stack order: [value, object, key] (value pushed first by RHS, then object and key by LHS)
-            Object key = pop();
-            Object object = pop();
-            Object value = pop();
-            EvalUtils.setIndex(thread, object, key, value);
-          }
-          break;
-
-        case SLICE:
-          {
-            Object step = pop();
-            Object stop = pop();
-            Object start = pop();
-            Object object = pop();
-            push(Starlark.slice(thread.mutability(), object, start, stop, step));
-          }
-          break;
-
-        // Attributes
-        case LOAD_ATTR:
-          {
-            String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-            Object object = pop();
-
-            // Special handling for ModuleWithName (used in load statements)
-            if (object instanceof ModuleWithName) {
-              ModuleWithName mwn = (ModuleWithName) object;
-              Object value = mwn.module.getGlobal(name);
-              if (value == null) {
-                throw Starlark.errorf(
-                    "file '%s' does not contain symbol '%s'", mwn.moduleName, name);
-              }
-              push(value);
-            } else {
-              push(Starlark.getattr(
-                  thread.mutability(), thread.getSemantics(), object, name, /*defaultValue=*/ null));
-            }
-          }
-          break;
-
-        case STORE_ATTR:
-          {
-            String name = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-            Object value = pop();
-            Object object = pop();
-            EvalUtils.setField(object, name, value);
-          }
-          break;
-
-        // Function calls
-        case CALL:
-          {
-            int posArgs = instr.getOperand1();
-            int encodedKwArgs = instr.getOperand2();
-
-            // Decode hasStarStar flag from high bit
-            boolean hasStarStar = (encodedKwArgs & 0x8000) != 0;
-            int kwArgs = encodedKwArgs & 0x7FFF;
-
-            // If hasStarStar, pop the **kwargs dict first
-            Map<String, Object> starStarDict = null;
-            if (hasStarStar) {
-              Object starStarObj = pop();
-              if (!(starStarObj instanceof Dict)) {
-                throw Starlark.errorf(
-                    "argument after ** must be a dict, not '%s'", Starlark.type(starStarObj));
-              }
-              starStarDict = new LinkedHashMap<>();
-              for (Map.Entry<?, ?> entry : ((Dict<?, ?>) starStarObj).entrySet()) {
-                if (!(entry.getKey() instanceof String)) {
-                  throw Starlark.errorf(
-                      "keywords must be strings, not '%s'", Starlark.type(entry.getKey()));
-                }
-                starStarDict.put((String) entry.getKey(), entry.getValue());
-              }
-            }
-
-            // Collect keyword arguments into a Map
-            Map<String, Object> kwargs = new LinkedHashMap<>();
-            for (int i = 0; i < kwArgs; i++) {
-              Object value = pop();
-              Object name = pop();
-              String key = (String) name;
-
-              // Check for duplicate with existing keyword arg
-              if (kwargs.containsKey(key)) {
-                throw Starlark.errorf("got multiple values for argument '%s'", key);
-              }
-              kwargs.put(key, value);
-            }
-
-            // Merge **kwargs dict, checking for duplicates
-            // Get function name before popping for better error messages
-            // Stack layout: [..., function, posarg1, ..., posargN]
-            // Function is at stack position: stack.size() - posArgs - 1
-            Object function = null;
-            if (starStarDict != null && posArgs < stack.size()) {
-              int functionIndex = stack.size() - posArgs - 1;
-              if (functionIndex >= 0) {
-                function = stack.get(functionIndex);
-              }
-            }
-
-            if (starStarDict != null) {
-              for (Map.Entry<String, Object> entry : starStarDict.entrySet()) {
-                String key = entry.getKey();
-                if (kwargs.containsKey(key)) {
-                  // Generate error message with function name if available
-                  if (function != null) {
-                    String funcName = Starlark.repr(function);
-                    // Extract just the function name from repr (e.g., "<built-in function int>" -> "int()")
-                    if (funcName.contains("function ")) {
-                      String name = funcName.substring(funcName.indexOf("function ") + 9);
-                      if (name.endsWith(">")) {
-                        name = name.substring(0, name.length() - 1);
-                      }
-                      throw Starlark.errorf("%s() got multiple values for argument '%s'", name, key);
-                    }
-                  }
-                  throw Starlark.errorf("got multiple values for argument '%s'", key);
-                }
-                kwargs.put(key, entry.getValue());
-              }
-            }
-
-            // Collect positional arguments into a List
-            List<Object> posArgList = new ArrayList<>(posArgs);
-            for (int i = 0; i < posArgs; i++) {
-              posArgList.add(0, pop()); // Add at front to reverse order
-            }
-
-            // Pop the function (reusing variable if already extracted for error messages)
-            if (function == null) {
-              function = pop();
-            } else {
-              pop(); // Discard, we already have it
-            }
-
-            // Set the frame's location to the call site before making the call
-            // This is important for stack traces and debugging
-            thread.frame(0).setLocation(currentLocation());
-
-            // Call the function with positional and keyword arguments
-            Object result = Starlark.call(thread, function, posArgList, kwargs);
-            push(result);
-          }
-          break;
-
-        case CALL_EX:
-          {
-            // CALL_EX handles calls with *args and/or **kwargs expansion
-            // Stack layout: [func, pos_list, star_arg_or_None, kw_dict, starstar_arg_or_None]
-
-            // Pop **kwargs value (or None)
-            Object starStarArg = pop();
-
-            // Pop keyword args dict
-            Object kwDictObj = pop();
-
-            // Pop *args value (or None)
-            Object starArg = pop();
-
-            // Pop positional args list
-            Object posListObj = pop();
-
-            // Pop function
-            Object function = pop();
-
-            // Build positional arguments list
-            List<Object> posArgList = new ArrayList<>();
-
-            // Add explicit positional args
-            if (posListObj instanceof StarlarkList) {
-              for (Object item : (StarlarkList<?>) posListObj) {
-                posArgList.add(item);
-              }
-            } else if (posListObj instanceof Tuple) {
-              for (Object item : (Tuple) posListObj) {
-                posArgList.add(item);
-              }
-            }
-
-            // Extend with *args if present
-            if (starArg != Starlark.NONE) {
-              try {
-                for (Object item : Starlark.toIterable(starArg)) {
-                  posArgList.add(item);
-                }
-              } catch (EvalException e) {
-                throw Starlark.errorf(
-                    "argument after * must be an iterable, not %s", Starlark.type(starArg));
-              }
-            }
-
-            // Build keyword arguments map
-            Map<String, Object> kwargs = new LinkedHashMap<>();
-
-            // Add explicit keyword args
-            if (kwDictObj instanceof Dict) {
-              for (Map.Entry<?, ?> entry : ((Dict<?, ?>) kwDictObj).entrySet()) {
-                if (!(entry.getKey() instanceof String)) {
-                  throw Starlark.errorf(
-                      "keywords must be strings, not %s", Starlark.type(entry.getKey()));
-                }
-                kwargs.put((String) entry.getKey(), entry.getValue());
-              }
-            }
-
-            // Merge **kwargs if present
-            if (starStarArg != Starlark.NONE) {
-              if (!(starStarArg instanceof Dict)) {
-                throw Starlark.errorf(
-                    "argument after ** must be a dict, not %s", Starlark.type(starStarArg));
-              }
-              for (Map.Entry<?, ?> entry : ((Dict<?, ?>) starStarArg).entrySet()) {
-                if (!(entry.getKey() instanceof String)) {
-                  throw Starlark.errorf(
-                      "keywords must be strings, not %s", Starlark.type(entry.getKey()));
-                }
-                String key = (String) entry.getKey();
-                if (kwargs.containsKey(key)) {
-                  // Get function name for error message
-                  String funcName = function instanceof StarlarkCallable
-                      ? ((StarlarkCallable) function).getName()
-                      : Starlark.type(function);
-                  // Use "argument" to match expected error message format
-                  throw Starlark.errorf(
-                      "%s() got multiple values for argument '%s'", funcName, key);
-                }
-                kwargs.put(key, entry.getValue());
-              }
-            }
-
-            // Set the frame's location to the call site before making the call
-            thread.frame(0).setLocation(currentLocation());
-
-            // Call the function
-            Object result = Starlark.call(thread, function, posArgList, kwargs);
-            push(result);
-          }
-          break;
-
-        case RETURN:
-          return pop();
-
-        // Control flow
-        case JUMP:
-          ip = instr.getOperand1() - 1; // -1 because we increment at end of loop
-          break;
-
-        case JUMP_IF_TRUE:
-          if (Starlark.truth(peek())) {
-            ip = instr.getOperand1() - 1;
-          }
-          break;
-
-        case JUMP_IF_FALSE:
-          if (!Starlark.truth(peek())) {
-            ip = instr.getOperand1() - 1;
-          }
-          break;
-
-        case POP_JUMP_IF_TRUE:
-          if (Starlark.truth(pop())) {
-            ip = instr.getOperand1() - 1;
-          }
-          break;
-
-        case POP_JUMP_IF_FALSE:
-          if (!Starlark.truth(pop())) {
-            ip = instr.getOperand1() - 1;
-          }
-          break;
-
-        // Iteration
-        case GET_ITER:
-          {
-            Object iterable = pop();
-
-            // Check if strings are forbidden in this context (comprehensions)
-            if (iterable instanceof String) {
-              throw withLocation(new EvalException("type 'string' is not iterable"));
-            }
-
-            // toIterable() will throw an error if the object is not iterable
-            Iterable<?> starlarkIterable;
-            try {
-              starlarkIterable = Starlark.toIterable(iterable);
-            } catch (EvalException e) {
-              throw withLocation(e);
-            }
-            Iterator<?> iterator = starlarkIterable.iterator();
-            // Track mutations on the iterable during iteration
-            EvalUtils.addIterator(iterable);
-            iteratorToIterable.put(iterator, iterable); // Store mapping for cleanup later
-            push(iterator);
-          }
-          break;
-
-        case FOR_ITER:
-          {
-            @SuppressWarnings("unchecked")
-            Iterator<Object> iterator = (Iterator<Object>) peek();
-            if (!iterator.hasNext()) {
-              // Iterator exhausted, jump to end of loop
-              // Note: Don't pop or cleanup here - END_FOR will handle it
-              ip = instr.getOperand1() - 1;
-            } else {
-              push(iterator.next());
-            }
-          }
-          break;
-
-        case END_FOR:
-          {
-            // Pop the iterator and remove the iteration lock
-            @SuppressWarnings("unchecked")
-            Iterator<Object> iterator = (Iterator<Object>) pop();
-            Object iterable = iteratorToIterable.remove(iterator);
-            if (iterable != null) {
-              EvalUtils.removeIterator(iterable);
-            }
-          }
-          break;
-
-        case LIST_APPEND:
-          {
-            // LIST_APPEND(i) pops value from top of stack and appends it to list at stack[-i]
-            // The offset is relative to stack BEFORE the pop
-            int offset = instr.getOperand1();
-            @SuppressWarnings("unchecked")
-            StarlarkList<Object> list = (StarlarkList<Object>) stackGet(offset);
-            Object value = pop();
-            list.addElement(value);
-          }
-          break;
-
-        case DICT_ADD:
-          {
-            // DICT_ADD(i) pops value and key from stack, adds to dict at stack[-i]
-            // The offset is relative to stack BEFORE the pops
-            int offset = instr.getOperand1();
-            @SuppressWarnings("unchecked")
-            Dict<Object, Object> dict = (Dict<Object, Object>) stackGet(offset);
-            Object value = pop();
-            Object key = pop();
-            dict.putEntry(key, value);
-          }
-          break;
-
-        case NOP:
-          // No operation
-          break;
-
-        case MAKE_FUNCTION:
-          {
-            // Get function descriptor from constant pool
-            FunctionDescriptor descriptor =
-                (FunctionDescriptor) chunk.getConstantPool().getConstant(instr.getOperand1());
-
-            // Get number of defaults from operand2
-            int numDefaults = instr.getOperand2();
-
-            // Pop default values from stack (in reverse order - last default is on top)
-            Object[] defaultsArray = new Object[numDefaults];
-            for (int i = numDefaults - 1; i >= 0; i--) {
-              defaultsArray[i] = pop();
-            }
-            Tuple defaultValues = Tuple.wrap(defaultsArray);
-
-            // Create BytecodeFunction with full signature info
-            BytecodeFunction function =
-                new BytecodeFunction(
-                    descriptor.getName(),
-                    descriptor.getLocation(),
-                    descriptor.getChunk(),
-                    descriptor.getParameterNames(),
-                    descriptor.hasVarargs(),
-                    descriptor.hasKwargs(),
-                    descriptor.getNumKeywordOnlyParams(),
-                    defaultValues,
-                    descriptor.getLocalCount(),
-                    filename);
-
-            // Set globals so the function can access them when called
-            function.setGlobals(globals);
-
-            // Set cell indices so the function knows which locals to wrap in Cells
-            function.setCellIndices(descriptor.getCellIndices());
-
-            // Capture free variables for closures
-            ImmutableList<FunctionDescriptor.FreevarInfo> freevarInfos = descriptor.getFreevarInfos();
-            if (!freevarInfos.isEmpty()) {
-              Object[] capturedCells = new Object[freevarInfos.size()];
-              for (int i = 0; i < freevarInfos.size(); i++) {
-                FunctionDescriptor.FreevarInfo info = freevarInfos.get(i);
-                if (info.isFromEnclosingFreevars) {
-                  // Get from enclosing function's freevars
-                  capturedCells[i] = freevars.get(info.index);
-                } else {
-                  // Get from current locals (it should be a Cell)
-                  Object local = locals[info.index];
-                  if (local instanceof BytecodeFunction.Cell) {
-                    capturedCells[i] = local;
-                  } else {
-                    // Create a new cell wrapping the value
-                    capturedCells[i] = new BytecodeFunction.Cell(local);
-                    // Also update locals so subsequent access sees the cell
-                    locals[info.index] = capturedCells[i];
-                  }
-                }
-              }
-              function.setFreevars(Tuple.wrap(capturedCells));
-            }
-
-            push(function);
-          }
-          break;
-
-        case LOAD_MODULE:
-          {
-            // Get module name from constant pool
-            String moduleName = (String) chunk.getConstantPool().getConstant(instr.getOperand1());
-
-            // Get the loader from the thread
-            StarlarkThread.Loader loader = thread.getLoader();
-            if (loader == null) {
-              throw Starlark.errorf("load statements may not be executed in this thread");
-            }
-
-            // Load the module
-            Module module = loader.load(moduleName);
-            if (module == null) {
-              throw Starlark.errorf("module '%s' not found", moduleName);
-            }
-
-            // Push the module with its name onto the stack (for better error messages)
-            push(new ModuleWithName(module, moduleName));
-          }
-          break;
-
-        default:
-          throw new UnsupportedOperationException("Unsupported opcode: " + opcode);
-      }
-
-        ip++;
-      }
-
-      // If we reach here without returning, return None
-      return Starlark.NONE;
-
-    } catch (EvalException ex) {
-      // Set error location and re-throw
-      throw withLocation(ex);
-    } catch (InterruptedException ex) {
-      // Re-throw InterruptedException as-is (don't wrap it)
-      throw ex;
-    } catch (Exception ex) {
-      // Wrap unexpected exceptions
-      throw new EvalException("Internal error during bytecode execution", ex);
-    }
-  }
-
-  private void push(Object value) {
+  @Override
+  protected void push(Object value) {
     stack.add(value);
   }
 
-  private Object pop() throws EvalException {
+  @Override
+  protected Object pop() throws EvalException {
     if (stack.isEmpty()) {
-      throw error("stack underflow");
+      throw new EvalException("stack underflow");
     }
     return stack.remove(stack.size() - 1);
   }
 
-  private Object peek() throws EvalException {
+  @Override
+  protected Object peek() throws EvalException {
     if (stack.isEmpty()) {
-      throw error("stack underflow");
+      throw new EvalException("stack underflow");
     }
     return stack.get(stack.size() - 1);
   }
 
-  // Get value at stack[-offset] (offset 1 = top, 2 = second from top, etc.)
-  private Object stackGet(int offset) throws EvalException {
+  @Override
+  protected Object stackGet(int offset) throws EvalException {
     int index = stack.size() - offset;
     if (index < 0 || index >= stack.size()) {
-      throw error("stack index out of range: " + offset);
+      throw new EvalException("stack index out of range: " + offset);
     }
     return stack.get(index);
   }
 
-  private void binaryOp(BinaryOperation op) throws EvalException, InterruptedException {
-    Object b = pop();
-    Object a = pop();
-    push(op.apply(a, b));
+  @Override
+  protected int stackSize() {
+    return stack.size();
   }
 
-  private void unaryOp(UnaryOperation op) throws EvalException {
-    Object a = pop();
-    push(op.apply(a));
+  @Override
+  protected Object getLocal(int index) {
+    return locals[index];
   }
 
-  @FunctionalInterface
-  private interface BinaryOperation {
-    Object apply(Object a, Object b) throws EvalException, InterruptedException;
-  }
-
-  @FunctionalInterface
-  private interface UnaryOperation {
-    Object apply(Object a) throws EvalException;
-  }
-
-  /**
-   * A minimal StarlarkCallable implementation for module-level code.
-   * This is used to provide a call stack frame for top-level bytecode execution.
-   */
-  private static class ModuleCallable implements StarlarkCallable {
-    private final String name;
-    private final Location location;
-
-    ModuleCallable(String name, String filename) {
-      this.name = name != null ? name : "<toplevel>";
-      this.location = filename != null
-          ? Location.fromFileLineColumn(filename, 0, 0)
-          : Location.BUILTIN;
-    }
-
-    @Override
-    public String getName() {
-      return name;
-    }
-
-    @Override
-    public Location getLocation() {
-      return location;
-    }
-
-    @Override
-    public Object call(StarlarkThread thread, Tuple args, Dict<String, Object> kwargs) {
-      throw new UnsupportedOperationException("ModuleCallable should not be called directly");
-    }
+  @Override
+  protected void setLocal(int index, Object value) {
+    locals[index] = value;
   }
 }

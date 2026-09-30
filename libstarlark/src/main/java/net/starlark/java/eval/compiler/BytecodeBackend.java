@@ -107,8 +107,8 @@ public interface BytecodeBackend {
     @Override
     public byte[] generate(BytecodeChunk chunk, String className, String sourceFile)
         throws IOException {
-      // BytecodeSerializer temporarily disabled - serialization not needed for testing
-      throw new UnsupportedOperationException("BytecodeSerializer disabled - not needed for execution");
+      throw new UnsupportedOperationException(
+          "InterpreterBackend is an interpreter backend - use BytecodeInterpreter.execute() directly");
     }
   }
 

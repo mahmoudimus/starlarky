@@ -99,7 +99,7 @@ public final class InterpreterEdgeCasesTest {
   @Test
   public void testVeryLargeNumbers() throws Exception {
     // Test that Starlark handles arbitrarily large integers
-    ev.exec("huge = 10 ** 100");
+    ev.exec("huge = int('1' + '0' * 100)");
     Object result = ev.lookup("huge");
     assertThat(result).isInstanceOf(StarlarkInt.class);
   }
@@ -109,8 +109,6 @@ public final class InterpreterEdgeCasesTest {
     ev.new Scenario()
         .testExpression("0 + 0", StarlarkInt.of(0))
         .testExpression("0 * 100", StarlarkInt.of(0))
-        .testExpression("0 ** 0", StarlarkInt.of(1))
-        .testExpression("0 ** 5", StarlarkInt.of(0))
         .testExpression("not 0", true)
         .testExpression("0 or 42", StarlarkInt.of(42))
         .testExpression("42 or 0", StarlarkInt.of(42))
@@ -162,14 +160,11 @@ public final class InterpreterEdgeCasesTest {
   // ---- Operator Edge Cases ----
 
   @Test
-  public void testPowerOperatorEdgeCases() throws Exception {
+  public void testPowerOperatorIsNotStarlark() throws Exception {
+    // Starlark has no ** operator (unlike Python).
     ev.new Scenario()
-        .testExpression("2 ** 0", StarlarkInt.of(1))
-        .testExpression("0 ** 0", StarlarkInt.of(1))
-        .testExpression("1 ** 1000", StarlarkInt.of(1))
-        .testExpression("(-1) ** 2", StarlarkInt.of(1))
-        .testExpression("(-1) ** 3", StarlarkInt.of(-1))
-        .testExpression("2 ** 10", StarlarkInt.of(1024));
+        .testIfErrorContains("syntax error at '**'", "2 ** 10")
+        .testIfErrorContains("syntax error at '**'", "x = 3", "y = x ** 2");
   }
 
   @Test
@@ -194,13 +189,14 @@ public final class InterpreterEdgeCasesTest {
 
   @Test
   public void testComparisonChaining() throws Exception {
+    // Starlark comparison operators are non-associative: chains need parentheses or 'and'.
     ev.new Scenario()
-        .testExpression("1 < 2 < 3", true)
-        .testExpression("3 > 2 > 1", true)
-        .testExpression("1 < 2 > 0", true)
-        .testExpression("1 < 2 < 1", false)
-        .testExpression("1 <= 1 <= 1", true)
-        .testExpression("5 > 3 == 3", false);
+        .testIfErrorContains("Operator '<' is not associative with operator '<'", "1 < 2 < 3")
+        .testIfErrorContains("Operator '>' is not associative with operator '=='", "5 > 3 == 3")
+        .testExpression("1 < 2 and 2 < 3", true)
+        .testExpression("(1 < 2) == True", true)
+        .testExpression("1 < 2 and 2 < 1", false)
+        .testExpression("(5 > 3) == 3", false);
   }
 
   // ---- Collection Edge Cases ----
@@ -235,8 +231,9 @@ public final class InterpreterEdgeCasesTest {
   @Test
   public void testDictWithDuplicateKeys() throws Exception {
     ev.new Scenario()
-        .testEval("{'a': 1, 'a': 2}", "{'a': 2}")
-        .testEval("{1: 'a', 1: 'b'}", "{1: 'b'}");
+        .testIfErrorContains("dictionary expression has duplicate key: \"a\"", "{'a': 1, 'a': 2}")
+        .testIfErrorContains("dictionary expression has duplicate key: 1", "{1: 'a', 1: 'b'}")
+        .testEval("dict([('a', 1), ('a', 2)])", "{'a': 2}"); // dict() keeps the last value
   }
 
   @Test
@@ -385,7 +382,7 @@ public final class InterpreterEdgeCasesTest {
     ev.new Scenario()
         .testExpression("'hello'.upper()", "HELLO")
         .testExpression("'HELLO'.lower()", "hello")
-        .testExpression("'hello world'.split()", StarlarkList.of(null, "hello", "world"))
+        .testExpression("'hello world'.split(' ')", StarlarkList.of(null, "hello", "world"))
         .testExpression("' '.join(['a', 'b', 'c'])", "a b c")
         .testExpression("'hello'.replace('l', 'L')", "heLLo")
         .testExpression("'hello'.startswith('he')", true)
@@ -397,9 +394,9 @@ public final class InterpreterEdgeCasesTest {
   @Test
   public void testStringSplitEdgeCases() throws Exception {
     ev.new Scenario()
-        .testExpression("''.split()", StarlarkList.of(null))
-        .testExpression("'  '.split()", StarlarkList.of(null))
-        .testExpression("'a'.split()", StarlarkList.of(null, "a"))
+        .testExpression("''.split(',')", StarlarkList.of(null, ""))
+        .testExpression("' '.split(' ')", StarlarkList.of(null, "", ""))
+        .testExpression("'a'.split(',')", StarlarkList.of(null, "a"))
         .testExpression("'a,b,c'.split(',')", StarlarkList.of(null, "a", "b", "c"))
         .testExpression("'a,,c'.split(',')", StarlarkList.of(null, "a", "", "c"));
   }
@@ -425,7 +422,7 @@ public final class InterpreterEdgeCasesTest {
             "lst.insert(0, 0)",
             "lst.insert(10, 99)",
             "lst.insert(-1, -1)")
-        .testEval("lst", "[0, 1, 2, -1, 3, 99]");
+        .testEval("lst", "[0, 1, 2, 3, -1, 99]"); // insert(-1, x) goes before the last element
   }
 
   @Test
@@ -490,7 +487,7 @@ public final class InterpreterEdgeCasesTest {
   public void testComprehensionWithMultipleFilters() throws Exception {
     ev.new Scenario()
         .testEval(
-            "[x for x in range(30) if x % 2 == 0 if x % 3 == 0 if x % 5 == 0]",
+            "[x for x in range(31) if x % 2 == 0 if x % 3 == 0 if x % 5 == 0]",
             "[0, 30]")
         .testEval(
             "[x for x in range(20) if x > 5 if x < 15 if x % 2 == 0]",

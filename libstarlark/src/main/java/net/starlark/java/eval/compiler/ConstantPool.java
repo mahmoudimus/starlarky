@@ -18,6 +18,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import net.starlark.java.eval.StarlarkFloat;
 
 /**
  * A pool of constants used in bytecode.
@@ -51,7 +52,7 @@ public final class ConstantPool {
     }
 
     // Check if we already have this constant
-    Integer existing = constantIndices.get(value);
+    Integer existing = constantIndices.get(key(value));
     if (existing != null) {
       return existing;
     }
@@ -59,8 +60,20 @@ public final class ConstantPool {
     // Add new constant
     int index = constants.size();
     constants.add(value);
-    constantIndices.put(value, index);
+    constantIndices.put(key(value), index);
     return index;
+  }
+
+  /**
+   * Returns the deduplication key for a constant. Starlark numbers compare equal across types
+   * (1 == 1.0, 0.0 == -0.0), so keying by {@code equals} alone would substitute one for the
+   * other; the key includes the class, and floats are compared by their exact bits.
+   */
+  private static Object key(Object value) {
+    if (value instanceof StarlarkFloat) {
+      return List.of(StarlarkFloat.class, Double.doubleToRawLongBits(((StarlarkFloat) value).toDouble()));
+    }
+    return List.of(value.getClass(), value);
   }
 
   /**
@@ -115,7 +128,7 @@ public final class ConstantPool {
    * Returns the index of a constant, or -1 if not found.
    */
   public int indexOf(Object value) {
-    Integer index = constantIndices.get(value);
+    Integer index = constantIndices.get(key(value));
     return index != null ? index : -1;
   }
 

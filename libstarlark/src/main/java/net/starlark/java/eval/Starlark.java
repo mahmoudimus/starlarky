@@ -1012,6 +1012,18 @@ public final class Starlark {
   }
 
   /**
+   * Wraps an unexpected exception thrown while executing top-level code outside {@link #fastcall},
+   * as {@link #fastcall} does for callees. The thread's stack must still include that code's frame.
+   */
+  static RuntimeException uncheckedEval(RuntimeException ex, StarlarkThread thread) {
+    return ex instanceof UncheckedEvalException ? ex : new UncheckedEvalException(ex, thread);
+  }
+
+  static Error uncheckedEval(Error ex, StarlarkThread thread) {
+    return ex instanceof UncheckedEvalError ? ex : new UncheckedEvalError(ex, thread);
+  }
+
+  /**
    * Decorates an {@link Error} with its Starlark stack, to help maintainers locate problematic
    * source expressions.
    *
@@ -1323,21 +1335,15 @@ public final class Starlark {
       throws EvalException, InterruptedException {
     // Use bytecode interpreter if bytecode is available
     if (prog.hasBytecode()) {
-      // Create mutable copy of globals including predeclared bindings
-      java.util.HashMap<String, Object> globals = new java.util.HashMap<>();
-
-      // Add Starlark universe (built-in functions like int, str, etc.)
-      globals.putAll(Starlark.UNIVERSE);
-
-      // Add module-specific predeclared bindings
-      globals.putAll(module.getPredeclaredBindings());
-
-      // Add current globals
-      globals.putAll(module.getGlobals());
+      // The VM reads and writes the module's globals directly; predeclared and universal
+      // names are read separately (LOAD_BUILTIN) so that file-level bindings shadow them.
+      java.util.HashMap<String, Object> builtins = new java.util.HashMap<>(Starlark.UNIVERSE);
+      builtins.putAll(module.getPredeclaredBindings());
+      BytecodeGlobals globals = new BytecodeGlobals(module, builtins);
 
       Object result;
       try {
-        result = BytecodeInterpreter.execute(
+        result = BytecodeVms.execute(
             prog.getBytecode(),
             thread,
             globals,
@@ -1351,34 +1357,6 @@ public final class Starlark {
           e.printStackTrace();
         }
         throw e;
-      }
-
-      // Write back ALL globals to module (skip predeclared/universe)
-      ImmutableMap<String, Object> predeclared = module.getPredeclaredBindings();
-      if (Boolean.getBoolean("debug.globals")) {
-        System.out.println("Writing back globals to module:");
-        for (String name : globals.keySet()) {
-          boolean isUniverse = Starlark.UNIVERSE.containsKey(name);
-          boolean isPredeclared = predeclared.containsKey(name);
-          System.out.println("  " + name + ": " + globals.get(name) +
-              (isUniverse ? " [UNIVERSE]" : "") + (isPredeclared ? " [PREDECLARED]" : ""));
-        }
-      }
-      for (Map.Entry<String, Object> entry : globals.entrySet()) {
-        String name = entry.getKey();
-        Object value = entry.getValue();
-        // Skip universe bindings, but allow overriding predeclared bindings
-        // (assignments to predeclared variables should shadow them)
-        if (!Starlark.UNIVERSE.containsKey(name)) {
-          // Check if the value changed from predeclared (i.e., it was assigned to)
-          Object predeclaredValue = predeclared.get(name);
-          if (predeclaredValue == null || !predeclaredValue.equals(value)) {
-            if (Boolean.getBoolean("debug.globals")) {
-              System.out.println("  -> Setting module global: " + name + " = " + value);
-            }
-            module.setGlobal(name, value);
-          }
-        }
       }
 
       return result;
