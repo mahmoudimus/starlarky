@@ -19,6 +19,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import javax.annotation.Nullable;
 import net.starlark.java.eval.BytecodeFunction;
 import net.starlark.java.eval.StarlarkFloat;
 import net.starlark.java.eval.StarlarkInt;
@@ -68,6 +69,33 @@ public final class BytecodeCompiler {
     this.jumpsToPatch = new ArrayList<>();
     this.loopDepth = 0;
     this.breakContinueStack = new ArrayList<>();
+  }
+
+  /** Reports whether programs are compiled to bytecode by default ({@code -Dstarlark.bytecode}). */
+  public static boolean enabledByDefault() {
+    return Boolean.getBoolean("starlark.bytecode");
+  }
+
+  /**
+   * Compiles a program body for {@link Program}, or returns null if {@code enable} is false or
+   * compilation fails (the program then runs on the tree-walker). With {@code
+   * -Dstarlark.bytecode.strict=true} a failure throws instead, so test runs exercise the bytecode
+   * path rather than silently falling back.
+   */
+  @Nullable
+  public static BytecodeChunk compileProgram(Resolver.Function body, boolean enable) {
+    if (!enable) {
+      return null;
+    }
+    try {
+      return compileFunction(body);
+    } catch (Exception e) {
+      if (Boolean.getBoolean("starlark.bytecode.strict")) {
+        throw new IllegalStateException("Bytecode compilation failed: " + e.getMessage(), e);
+      }
+      System.err.println("Warning: Bytecode compilation failed: " + e.getMessage());
+      return null;
+    }
   }
 
   /**

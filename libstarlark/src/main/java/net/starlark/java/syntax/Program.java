@@ -82,33 +82,6 @@ public final class Program {
     return options;
   }
 
-  private static boolean bytecodeEnabledByDefault() {
-    // Bytecode compilation disabled by default until all features implemented
-    // Set system property -Dstarlark.bytecode=true to enable
-    return Boolean.getBoolean("starlark.bytecode");
-  }
-
-  /** Compiles {@code body} to bytecode, or returns null if disabled or compilation fails. */
-  @Nullable
-  private static BytecodeChunk compileBytecode(Resolver.Function body, boolean enableBytecode) {
-    if (!enableBytecode) {
-      return null;
-    }
-    try {
-      return BytecodeCompiler.compileFunction(body);
-    } catch (Exception e) {
-      // -Dstarlark.bytecode.strict=true turns the fallback into a failure, so test runs
-      // actually exercise the bytecode path instead of silently using the tree-walker.
-      if (Boolean.getBoolean("starlark.bytecode.strict")) {
-        throw new IllegalStateException("Bytecode compilation failed: " + e.getMessage(), e);
-      }
-      // If bytecode compilation fails, fall back to interpreted mode
-      // This ensures backward compatibility
-      System.err.println("Warning: Bytecode compilation failed: " + e.getMessage());
-      return null;
-    }
-  }
-
   // TODO(adonovan): eliminate once Eval no longer needs access to syntax.
   public Resolver.Function getResolvedFunction() {
     return body;
@@ -198,7 +171,7 @@ public final class Program {
   public static Program compileFile(
       StarlarkFile file, Resolver.Module env, @Nullable TypeTagger.Loader loader)
       throws SyntaxError.Exception {
-    return compileFile(file, env, loader, bytecodeEnabledByDefault());
+    return compileFile(file, env, loader, BytecodeCompiler.enabledByDefault());
   }
 
   private static Program compileFile(
@@ -242,7 +215,7 @@ public final class Program {
         docCommentsMap,
         unusedDocCommentLines,
         /* typeTable= */ null,
-        compileBytecode(file.getResolvedFunction(), enableBytecode));
+        BytecodeCompiler.compileProgram(file.getResolvedFunction(), enableBytecode));
   }
 
   public static Program compileFile(StarlarkFile file, Resolver.Module env)
@@ -281,6 +254,6 @@ public final class Program {
         /* docCommentsMap= */ ImmutableMap.of(),
         /* unusedDocCommentLines= */ ImmutableList.of(),
         /* typeTable= */ null,
-        compileBytecode(body, bytecodeEnabledByDefault()));
+        BytecodeCompiler.compileProgram(body, BytecodeCompiler.enabledByDefault()));
   }
 }
