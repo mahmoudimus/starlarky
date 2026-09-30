@@ -124,10 +124,21 @@ public final class LarkyEvaluator {
     // Make the modules available as predeclared bindings.
     module = Module.withPredeclared(getLarkySemantics(), getEnvironment());
 
-    // parse & compile
+    // parse & compile (Larky's own modules come from a process-wide cache)
     FileOptions options = getStarlarkValidationOptions();
-    ParserInput input = ParserInput.fromUTF8(content.readContentBytes(), content.path());
-    Program prog = compileStarlarkProgram(module, input, options);
+    final Module env = module;
+    Program prog =
+        content instanceof ResourceContentStarFile resource
+            ? ProgramCache.get(
+                resource.path(),
+                env,
+                options,
+                getLarkySemantics(),
+                parsed -> compileStarlarkProgram(
+                    env, ParserInput.fromUTF8(resource.readContentBytes(), resource.path()), options,
+                    parsed))
+            : compileStarlarkProgram(
+                module, ParserInput.fromUTF8(content.readContentBytes(), content.path()), options);
     Map<String, Module> loadedModules = processLoads(content, prog);
 
     Object starlarkOutput;
@@ -276,9 +287,18 @@ public final class LarkyEvaluator {
   @NotNull
   @VisibleForTesting
   Program compileStarlarkProgram(Module module, ParserInput input, FileOptions options) throws EvalException {
+    return compileStarlarkProgram(module, input, options, new StarlarkFile[1]);
+  }
+
+  /** As above; also stores the parsed file in {@code parsed[0]} once it compiled successfully. */
+  private Program compileStarlarkProgram(
+      Module module, ParserInput input, FileOptions options, StarlarkFile[] parsed)
+      throws EvalException {
     Program prog;
     try {
-      prog = Program.compileFile(StarlarkFile.parse(input, options), module);
+      StarlarkFile file = StarlarkFile.parse(input, options);
+      prog = Program.compileFile(file, module);
+      parsed[0] = file;
     } catch (SyntaxError.Exception ex) {
       List<String> errs = new ArrayList<>();
       for (SyntaxError error : ex.errors()) {
