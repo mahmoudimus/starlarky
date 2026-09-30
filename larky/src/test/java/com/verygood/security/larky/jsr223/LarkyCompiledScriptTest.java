@@ -51,7 +51,7 @@ public class LarkyCompiledScriptTest {
   }
 
   @Test
-  public void testEval_withUncheckedException() {
+  public void testEval_withUncheckedException() throws ScriptException {
     LarkyScriptEngineFactory factory = new LarkyScriptEngineFactory();
     LarkyScriptEngine engine = (LarkyScriptEngine) factory.getScriptEngine();
     String script = String.join("\n",
@@ -91,7 +91,7 @@ public class LarkyCompiledScriptTest {
   }
 
   @Test
-  public void testEval_withCheckedException() {
+  public void testEval_withCheckedException() throws ScriptException {
 
     class OperationException extends Exception {
 
