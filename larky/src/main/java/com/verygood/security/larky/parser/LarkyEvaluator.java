@@ -136,18 +136,32 @@ public final class LarkyEvaluator {
     // parse & compile (Larky's own modules come from a process-wide cache)
     FileOptions options = getStarlarkValidationOptions();
     final Module env = module;
-    ProgramCache.Executable prog =
-        content instanceof ResourceContentStarFile resource
-            ? ProgramCache.get(
-                resource.path(),
-                env,
-                options,
-                getLarkySemantics(),
-                parsed -> compileStarlarkProgram(
-                    env, ParserInput.fromUTF8(resource.readContentBytes(), resource.path()), options,
-                    parsed))
-            : scriptProgram(content, module, options);
-    Map<String, Module> loadedModules = processLoads(content, prog.loads());
+    ProgramCache.Executable prog;
+    Map<String, Module> loadedModules;
+    if (typeChecking() && !(content instanceof ResourceContentStarFile)) {
+      // A typed script is tagged with the types of the modules it loads, so it is compiled here
+      // rather than cached. Its annotations may name the classes it defines.
+      module.allowForwardTypeReferences();
+      Program program =
+          compileStarlarkProgram(
+              module,
+              ParserInput.fromUTF8(content.readContentBytes(), content.path()),
+              options.toBuilder().allowTypeSyntax(true).resolveTypeSyntax(true).build());
+      loadedModules = processLoads(content, program.getLoads());
+      prog = ProgramCache.Executable.of(withTypeInfo(program, module, loadedModules));
+    } else {
+      prog = content instanceof ResourceContentStarFile resource
+          ? ProgramCache.get(
+              resource.path(),
+              env,
+              options,
+              getLarkySemantics(),
+              parsed -> compileStarlarkProgram(
+                  env, ParserInput.fromUTF8(resource.readContentBytes(), resource.path()), options,
+                  parsed))
+          : scriptProgram(content, module, options);
+      loadedModules = processLoads(content, prog.loads());
+    }
 
     Object starlarkOutput;
 
@@ -293,12 +307,17 @@ public final class LarkyEvaluator {
       try (Mutability mu = Mutability.create("InMemoryNativeModule")) {
         StarlarkThread thread = StarlarkThread.createTransient(mu, evaluator.getLarkySemantics());
         try {
-          Starlark.execFile(
-              ParserInput.fromString(String.format("%1$s = _%1$s", moduleToLoad), "<builtin>"),
-              evaluator.getStarlarkValidationOptions(),
+          // Not Starlark.execFile, which would type-check this generated file when the
+          // semantics enable type checking (its options do not allow type syntax).
+          Starlark.execFileProgram(
+              Program.compileFile(
+                  StarlarkFile.parse(
+                      ParserInput.fromString(
+                          String.format("%1$s = _%1$s", moduleToLoad), "<builtin>"),
+                      evaluator.getStarlarkValidationOptions()),
+                  newModule),
               newModule,
-              thread
-          );
+              thread);
         } catch (InterruptedException | EvalException | SyntaxError.Exception e) {
           throw new StarlarkEvalWrapper.Exc.RuntimeEvalException(e, thread);
         }
@@ -364,6 +383,29 @@ public final class LarkyEvaluator {
               String.join("\n", errs)));
     }
     return prog;
+  }
+
+  private boolean typeChecking() {
+    return larkySemantics.getBool(StarlarkSemantics.EXPERIMENTAL_STARLARK_STATIC_TYPE_CHECKING)
+        || larkySemantics.getBool(StarlarkSemantics.EXPERIMENTAL_STARLARK_DYNAMIC_TYPE_CHECKING);
+  }
+
+  /** Attaches type information to {@code program}, reporting type errors like syntax errors. */
+  private Program withTypeInfo(Program program, Module module, Map<String, Module> loadedModules)
+      throws EvalException {
+    try {
+      return Starlark.maybeWithTypeInfo(program, module, larkySemantics, loadedModules::get);
+    } catch (SyntaxError.Exception ex) {
+      List<String> errs = new ArrayList<>();
+      for (SyntaxError error : ex.errors()) {
+        reporter.error(error.toString());
+        errs.add(error.toString());
+      }
+      throw new EvalException(
+          String.format(
+              "Error type checking Starlark program: %1$s%n%2$s",
+              program.getFilename(), String.join("\n", errs)));
+    }
   }
 
   FileOptions getStarlarkValidationOptions() throws EvalException {
