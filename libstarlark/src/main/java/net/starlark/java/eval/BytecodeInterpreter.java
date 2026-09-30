@@ -579,10 +579,12 @@ public final class BytecodeInterpreter {
         // Iteration
         case GET_ITER:
           {
-            Object iterable = pop();
+            Object iterable = peek(); // Don't pop, keep iterable on stack
             Iterable<?> starlarkIterable = Starlark.toIterable(iterable);
             Iterator<?> iterator = starlarkIterable.iterator();
-            push(iterator);
+            // Track mutations on the iterable during iteration
+            EvalUtils.addIterator(iterable);
+            push(iterator); // Stack now has: [iterable, iterator]
           }
           break;
 
@@ -591,8 +593,10 @@ public final class BytecodeInterpreter {
             @SuppressWarnings("unchecked")
             Iterator<Object> iterator = (Iterator<Object>) peek();
             if (!iterator.hasNext()) {
-              // Iterator exhausted, pop it and jump to end of loop
-              pop();
+              // Iterator exhausted, clean up and jump to end of loop
+              pop(); // Pop iterator
+              Object iterable = pop(); // Pop iterable
+              EvalUtils.removeIterator(iterable);
               ip = instr.getOperand1() - 1;
             } else {
               push(iterator.next());
