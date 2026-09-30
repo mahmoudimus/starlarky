@@ -83,7 +83,9 @@ public final class Program {
   }
 
   private static boolean bytecodeEnabledByDefault() {
-    return true;
+    // Bytecode compilation disabled by default until all features implemented
+    // Set system property -Dstarlark.bytecode=true to enable
+    return Boolean.getBoolean("starlark.bytecode");
   }
 
   /** Compiles {@code body} to bytecode, or returns null if disabled or compilation fails. */
