@@ -14,7 +14,6 @@
 
 package net.starlark.java.eval;
 
-import java.util.HashMap;
 import java.util.Map;
 import net.starlark.java.eval.compiler.BytecodeChunk;
 import net.starlark.java.eval.compiler.BytecodeTarget;
@@ -43,14 +42,13 @@ final class BytecodeVms {
       return Starlark.positionalOnlyCall(thread, toplevel);
     }
     // The VM reads and writes the module's globals directly; predeclared and universal names are
-    // read separately (LOAD_BUILTIN) so that file-level bindings shadow them.
-    HashMap<String, Object> builtins = new HashMap<>(Starlark.UNIVERSE);
-    builtins.putAll(module.getPredeclaredBindings());
+    // read separately (LOAD_BUILTIN: predeclared, then universe) so that file-level bindings
+    // shadow them.
     Object result =
         execute(
             prog.getBytecode(),
             thread,
-            new BytecodeGlobals(module, builtins),
+            new BytecodeGlobals(module, module.getPredeclaredBindings()),
             prog.getFilename());
     if (Boolean.getBoolean("debug.globals")) {
       System.out.println("Bytecode execution completed successfully. Result: " + result);

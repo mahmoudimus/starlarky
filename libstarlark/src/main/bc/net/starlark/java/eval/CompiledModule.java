@@ -23,7 +23,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Arrays;
-import java.util.HashMap;
 import java.util.Map;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.compiler.BytecodeChunk;
@@ -161,9 +160,8 @@ public final class CompiledModule {
     if (module.getDocumentation() == null && documentation != null) {
       module.setDocumentation(Starlark.trimDocString(documentation));
     }
-    HashMap<String, Object> builtins = new HashMap<>(Starlark.UNIVERSE);
-    builtins.putAll(module.getPredeclaredBindings());
-    return BytecodeVms.execute(chunk, thread, new BytecodeGlobals(module, builtins), filename);
+    return BytecodeVms.execute(
+        chunk, thread, new BytecodeGlobals(module, module.getPredeclaredBindings()), filename);
   }
 
   // ---- serialization ----
