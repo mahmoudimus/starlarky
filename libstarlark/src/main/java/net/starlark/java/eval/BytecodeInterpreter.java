@@ -785,9 +785,9 @@ public final class BytecodeInterpreter {
                   String funcName = function instanceof StarlarkCallable
                       ? ((StarlarkCallable) function).getName()
                       : Starlark.type(function);
-                  // Use "parameter" not "keyword argument" to match StarlarkFunction behavior
+                  // Use "argument" to match expected error message format
                   throw Starlark.errorf(
-                      "%s() got multiple values for parameter '%s'", funcName, key);
+                      "%s() got multiple values for argument '%s'", funcName, key);
                 }
                 kwargs.put(key, entry.getValue());
               }
