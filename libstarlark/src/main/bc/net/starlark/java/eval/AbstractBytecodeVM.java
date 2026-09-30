@@ -163,6 +163,17 @@ abstract class AbstractBytecodeVM {
     return ex.ensureStack(thread);
   }
 
+  private static final TokenKind[] TOKEN_KINDS = TokenKind.values();
+
+  /** Checks the step limit, thread interrupt and expiry, as Eval does per statement and loop. */
+  private void checkpoint() throws EvalException, InterruptedException {
+    thread.checkInterrupt();
+    if (thread.steps >= thread.stepLimit) {
+      throw new EvalException("Starlark computation cancelled: too many steps");
+    }
+    thread.checkExpired();
+  }
+
   final Object run() throws EvalException, InterruptedException {
     List<Instruction> instructions = chunk.getInstructions();
     boolean debug = Boolean.getBoolean("debug.bytecode");
@@ -184,14 +195,12 @@ abstract class AbstractBytecodeVM {
     }
 
     try {
+      checkpoint();
       while (ip < instructions.size()) {
-        thread.checkInterrupt();
-        if (++thread.steps >= thread.stepLimit) {
-          throw new EvalException("Starlark computation cancelled: too many steps");
-        }
-        if (thread.isExpired()) {
-          throw new EvalException("Starlark computation cancelled: past expiration date");
-        }
+        // Every instruction counts as a step; the limit, interrupts and expiry are checked at
+        // checkpoints (function entry, each loop iteration, each call), which every unbounded
+        // computation passes through.
+        thread.steps++;
 
         Instruction instr = instructions.get(ip);
         Opcode opcode = instr.getOpcode();
@@ -403,7 +412,7 @@ abstract class AbstractBytecodeVM {
 
           case INPLACE_OP:
             {
-              TokenKind op = TokenKind.values()[instr.getOperand1()];
+              TokenKind op = TOKEN_KINDS[instr.getOperand1()];
               Object y = pop();
               Object x = pop();
               push(Eval.inplaceBinaryOp(thread, op, x, y));
@@ -719,6 +728,7 @@ abstract class AbstractBytecodeVM {
             break;
 
           case FOR_ITER:
+            checkpoint();
             {
               @SuppressWarnings("unchecked")
               Iterator<Object> iterator = (Iterator<Object>) peek();
@@ -934,6 +944,7 @@ abstract class AbstractBytecodeVM {
    */
   private Object call(Object function, Object[] positional, Object[] named)
       throws EvalException, InterruptedException {
+    checkpoint();
     StarlarkCallable callable = Starlark.getStarlarkCallable(thread, function);
     if (named.length == 0) {
       return Starlark.positionalOnlyCall(thread, callable, positional);
