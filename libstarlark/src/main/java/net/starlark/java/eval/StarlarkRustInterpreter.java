@@ -12,116 +12,127 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package net.starlark.java.eval.compiler;
+package net.starlark.java.eval;
+
+import net.starlark.java.eval.compiler.BytecodeChunk;
+import net.starlark.java.eval.compiler.FunctionDescriptor;
+import net.starlark.java.eval.compiler.Instruction;
+import net.starlark.java.eval.compiler.Opcode;
 
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import net.starlark.java.eval.*;
 import net.starlark.java.syntax.Location;
 import net.starlark.java.syntax.TokenKind;
 
 /**
- * A starlark-go style bytecode interpreter.
+ * A starlark-rust style bytecode interpreter using slot-based execution.
  *
- * <p>This interpreter follows the starlark-go execution model:
+ * <p>This interpreter follows the starlark-rust execution model:
  * <ul>
- *   <li>Stack-based virtual machine with separate operand stack
- *   <li>Local variables stored in a separate array (not on the stack)
- *   <li>Simple switch-based opcode dispatch
- *   <li>Position tracking via delta-encoded line/column information
- *   <li>Free variables for closures stored separately
+ *   <li>Slot-based memory model: unified array for locals AND stack
+ *   <li>Fixed frame size computed at compile time
+ *   <li>Slots indexed by position: [locals...][stack...]
+ *   <li>Type-safe instruction dispatch via handler pattern
+ *   <li>Optimized for cache-friendly sequential memory access
  * </ul>
  *
- * <p>Key differences from starlark-rust style:
+ * <p>Memory Layout (starlark-rust style):
+ * <pre>
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │ Local Variables (0..localCount-1) │ Stack (localCount...) │
+ * └─────────────────────────────────────────────────────────────┘
+ * </pre>
+ *
+ * <p>Key differences from starlark-go style:
  * <ul>
- *   <li>Operand stack is separate from local variable storage
- *   <li>Uses dynamic stack growth (ArrayList) rather than fixed slots
- *   <li>Simpler memory model at the cost of some performance
+ *   <li>Locals and stack share the same contiguous slot array
+ *   <li>Stack pointer (sp) is an index into the slot array
+ *   <li>Better cache locality for hot loops
+ *   <li>Fixed maximum stack depth (fails if exceeded)
  * </ul>
  *
- * @see StarlarkRustInterpreter for the slot-based alternative
+ * @see StarlarkGoInterpreter for the stack-based alternative
  */
-public final class StarlarkGoInterpreter {
+public final class StarlarkRustInterpreter {
 
-  /** Execution statistics for profiling. */
-  public static final class Stats {
-    public long instructionsExecuted;
-    public long stackOperations;
-    public long functionCalls;
-    public long iterations;
+  /** Maximum stack depth to prevent runaway recursion. */
+  private static final int MAX_STACK_SIZE = 1024;
 
-    @Override
-    public String toString() {
-      return String.format(
-          "Stats{instructions=%d, stackOps=%d, calls=%d, iterations=%d}",
-          instructionsExecuted, stackOperations, functionCalls, iterations);
-    }
+  /** Slot index type - mimics BcSlot from starlark-rust. */
+  private static final class Slot {
+    final int index;
+    Slot(int index) { this.index = index; }
   }
 
-  // Execution state - mirrors starlark-go's frame structure
+  /** Slot range - mimics BcSlotRange from starlark-rust. */
+  private static final class SlotRange {
+    final int start;
+    final int end;
+    SlotRange(int start, int end) {
+      this.start = start;
+      this.end = end;
+    }
+    int len() { return end - start; }
+  }
+
+  // Frame state - mirrors starlark-rust's BcFrame
   private final BytecodeChunk code;
   private final StarlarkThread thread;
-  private final Object[] locals;           // Local variables (separate from stack)
-  private final List<Object> stack;        // Operand stack (dynamic)
+  private final Object[] slots;            // Unified: [locals | stack]
+  private final int localCount;
+  private int sp;                          // Stack pointer (index into slots)
   private final Map<String, Object> globals;
-  private final Object[] freeVars;         // Closure variables
   private final String filename;
   private int pc;                          // Program counter
-  private final Stats stats;
   private final Map<Iterator<?>, Object> iteratorToIterable;
 
-  private StarlarkGoInterpreter(
+  private StarlarkRustInterpreter(
       BytecodeChunk code,
       StarlarkThread thread,
       Map<String, Object> globals,
-      Object[] freeVars,
-      String filename,
-      boolean collectStats) {
+      String filename) {
     this.code = code;
     this.thread = thread;
-    this.locals = new Object[code.getLocalCount()];
-    this.stack = new ArrayList<>(16); // Initial capacity like starlark-go
+    this.localCount = code.getLocalCount();
+    // Allocate slots: locals + max stack
+    this.slots = new Object[localCount + MAX_STACK_SIZE];
+    this.sp = localCount; // Stack starts after locals
     this.globals = globals != null ? globals : new HashMap<>();
-    this.freeVars = freeVars != null ? freeVars : new Object[0];
-    this.filename = filename != null ? filename : "<starlark-go>";
+    this.filename = filename != null ? filename : "<starlark-rust>";
     this.pc = 0;
-    this.stats = collectStats ? new Stats() : null;
     this.iteratorToIterable = new HashMap<>();
+
+    // Initialize locals to null (like starlark-rust's None)
+    for (int i = 0; i < localCount; i++) {
+      slots[i] = null;
+    }
   }
 
   /**
-   * Executes bytecode using the starlark-go interpreter model.
-   *
-   * @param code the bytecode chunk to execute
-   * @param thread the Starlark thread context
-   * @param globals global variable namespace
-   * @return the execution result
+   * Executes bytecode using the starlark-rust slot-based model.
    */
   public static Object execute(BytecodeChunk code, StarlarkThread thread, Map<String, Object> globals)
       throws EvalException, InterruptedException {
-    return execute(code, thread, globals, null, null, false);
+    return execute(code, thread, globals, null);
   }
 
   /**
-   * Executes bytecode with full configuration options.
+   * Executes bytecode with filename for error reporting.
    */
   public static Object execute(
       BytecodeChunk code,
       StarlarkThread thread,
       Map<String, Object> globals,
-      Object[] freeVars,
-      String filename,
-      boolean collectStats)
+      String filename)
       throws EvalException, InterruptedException {
 
-    StarlarkCallable callable = new GoStyleCallable(code.getName(), filename);
+    StarlarkCallable callable = new RustStyleCallable(code.getName(), filename);
     thread.push(callable);
     try {
-      StarlarkGoInterpreter interp = new StarlarkGoInterpreter(
-          code, thread, globals, freeVars, filename, collectStats);
+      StarlarkRustInterpreter interp = new StarlarkRustInterpreter(code, thread, globals, filename);
       return interp.run();
     } catch (EvalException ex) {
       throw ex.ensureStack(thread);
@@ -131,7 +142,7 @@ public final class StarlarkGoInterpreter {
   }
 
   /**
-   * Executes bytecode with arguments (for function calls).
+   * Executes bytecode with arguments.
    */
   public static Object executeWithArgs(
       BytecodeChunk code,
@@ -141,12 +152,11 @@ public final class StarlarkGoInterpreter {
       String filename)
       throws EvalException, InterruptedException {
 
-    StarlarkGoInterpreter interp = new StarlarkGoInterpreter(
-        code, thread, globals, null, filename, false);
+    StarlarkRustInterpreter interp = new StarlarkRustInterpreter(code, thread, globals, filename);
 
-    // Initialize parameters - starlark-go style
+    // Initialize parameters in local slots (0..paramCount-1)
     int paramCount = Math.min(args.length, code.getParameterCount());
-    System.arraycopy(args, 0, interp.locals, 0, paramCount);
+    System.arraycopy(args, 0, interp.slots, 0, paramCount);
 
     return interp.run();
   }
@@ -157,18 +167,67 @@ public final class StarlarkGoInterpreter {
     return Location.fromFileLineColumn(filename, Math.max(0, line), col);
   }
 
+  // ===== Slot Operations (starlark-rust style) =====
+
+  /** Get value from slot (BcSlotIn) */
+  private Object getSlot(int index) throws EvalException {
+    if (index < 0 || index >= sp) {
+      throw new EvalException("invalid slot read: " + index);
+    }
+    return slots[index];
+  }
+
+  /** Set value in slot (BcSlotOut) */
+  private void setSlot(int index, Object value) throws EvalException {
+    if (index < 0 || index >= slots.length) {
+      throw new EvalException("invalid slot write: " + index);
+    }
+    slots[index] = value;
+  }
+
+  /** Push value onto stack (increments sp) */
+  private void push(Object value) throws EvalException {
+    if (sp >= slots.length) {
+      throw new EvalException("stack overflow");
+    }
+    slots[sp++] = value;
+  }
+
+  /** Pop value from stack (decrements sp) */
+  private Object pop() throws EvalException {
+    if (sp <= localCount) {
+      throw new EvalException("stack underflow");
+    }
+    return slots[--sp];
+  }
+
+  /** Peek at top of stack */
+  private Object peek() throws EvalException {
+    if (sp <= localCount) {
+      throw new EvalException("stack underflow");
+    }
+    return slots[sp - 1];
+  }
+
+  /** Get value at stack offset (1 = top, 2 = second, etc.) */
+  private Object stackGet(int offset) throws EvalException {
+    int index = sp - offset;
+    if (index < localCount) {
+      throw new EvalException("stack access out of range");
+    }
+    return slots[index];
+  }
+
   /**
-   * Main execution loop - starlark-go style switch dispatch.
+   * Main execution loop - starlark-rust style with slot-based operations.
    *
-   * <p>This follows starlark-go's interpreter structure with a simple
-   * switch statement for opcode dispatch. Each case handles one opcode
-   * and manipulates the operand stack and local variables.
+   * <p>This uses the slot-based model where locals and stack share the same
+   * contiguous array. The stack pointer (sp) points to the next free slot.
    */
   private Object run() throws EvalException, InterruptedException {
     List<Instruction> instructions = code.getInstructions();
 
     while (pc < instructions.size()) {
-      // Check thread state - starlark-go checks cancellation here
       thread.checkInterrupt();
       if (++thread.steps >= thread.stepLimit) {
         throw new EvalException("Starlark computation cancelled: too many steps");
@@ -177,11 +236,7 @@ public final class StarlarkGoInterpreter {
       Instruction instr = instructions.get(pc);
       Opcode op = instr.getOpcode();
 
-      if (stats != null) {
-        stats.instructionsExecuted++;
-      }
-
-      // Main dispatch - mirrors starlark-go's switch statement
+      // Dispatch via handler pattern (like starlark-rust's BcOpcodeHandler)
       switch (op) {
         // ===== Stack Operations =====
         case POP:
@@ -217,23 +272,25 @@ public final class StarlarkGoInterpreter {
           push(Boolean.FALSE);
           break;
 
-        // ===== Local Variables (starlark-go: LOCAL/SETLOCAL) =====
+        // ===== Local Variables (slot-based: LoadLocal, StoreLocal) =====
         case LOAD_LOCAL: {
-          int index = instr.getOperand1();
-          Object value = locals[index];
+          int slotIndex = instr.getOperand1();
+          Object value = slots[slotIndex]; // Direct slot access
           if (value == null) {
-            String name = getLocalName(index);
+            String name = getLocalName(slotIndex);
             throw Starlark.errorf("local variable '%s' referenced before assignment", name);
           }
           push(value);
           break;
         }
 
-        case STORE_LOCAL:
-          locals[instr.getOperand1()] = pop();
+        case STORE_LOCAL: {
+          int slotIndex = instr.getOperand1();
+          slots[slotIndex] = pop(); // Direct slot write
           break;
+        }
 
-        // ===== Global Variables (starlark-go: GLOBAL/SETGLOBAL) =====
+        // ===== Globals (starlark-rust: LoadModule, StoreModule) =====
         case LOAD_GLOBAL: {
           String name = (String) code.getConstantPool().getConstant(instr.getOperand1());
           Object value = globals.get(name);
@@ -250,26 +307,14 @@ public final class StarlarkGoInterpreter {
           break;
         }
 
-        // ===== Free Variables (starlark-go: FREE/FREECELL) =====
-        case LOAD_FREE: {
-          int index = instr.getOperand1();
-          if (index >= freeVars.length) {
-            throw Starlark.errorf("free variable index out of range: %d", index);
-          }
-          push(freeVars[index]);
-          break;
-        }
+        // ===== Free Variables =====
+        case LOAD_FREE:
+          throw new UnsupportedOperationException("LOAD_FREE not implemented in slot-based interpreter");
 
-        case STORE_FREE: {
-          int index = instr.getOperand1();
-          if (index >= freeVars.length) {
-            throw Starlark.errorf("free variable index out of range: %d", index);
-          }
-          freeVars[index] = pop();
-          break;
-        }
+        case STORE_FREE:
+          throw new UnsupportedOperationException("STORE_FREE not implemented in slot-based interpreter");
 
-        // ===== Binary Operations (starlark-go: PLUS, MINUS, etc.) =====
+        // ===== Binary Operations (starlark-rust: Add, Sub, etc.) =====
         case ADD:
           binaryOp(TokenKind.PLUS);
           break;
@@ -294,7 +339,7 @@ public final class StarlarkGoInterpreter {
           binaryOp(TokenKind.PERCENT);
           break;
 
-        // ===== Comparisons (starlark-go: LT, GT, EQL, etc.) =====
+        // ===== Comparisons =====
         case EQUAL:
           binaryOp(TokenKind.EQUALS_EQUALS);
           break;
@@ -327,7 +372,7 @@ public final class StarlarkGoInterpreter {
           binaryOp(TokenKind.NOT_IN);
           break;
 
-        // ===== Bitwise Operations =====
+        // ===== Bitwise =====
         case BIT_AND:
           binaryOp(TokenKind.AMPERSAND);
           break;
@@ -348,7 +393,7 @@ public final class StarlarkGoInterpreter {
           binaryOp(TokenKind.GREATER_GREATER);
           break;
 
-        // ===== Unary Operations =====
+        // ===== Unary =====
         case NEGATE:
           push(EvalUtils.unaryOp(TokenKind.MINUS, pop()));
           break;
@@ -365,7 +410,7 @@ public final class StarlarkGoInterpreter {
           push(EvalUtils.unaryOp(TokenKind.TILDE, pop()));
           break;
 
-        // ===== Collections (starlark-go: MAKELIST, MAKETUPLE, MAKEDICT) =====
+        // ===== Collections (starlark-rust: ListNew, TupleNPop, DictNew) =====
         case BUILD_LIST: {
           int count = instr.getOperand1();
           List<Object> elements = new ArrayList<>(count);
@@ -388,11 +433,10 @@ public final class StarlarkGoInterpreter {
 
         case BUILD_DICT: {
           int count = instr.getOperand1();
-          // Pop pairs in reverse order
           Object[] pairs = new Object[count * 2];
           for (int i = count - 1; i >= 0; i--) {
-            pairs[i * 2 + 1] = pop(); // value
-            pairs[i * 2] = pop();     // key
+            pairs[i * 2 + 1] = pop();
+            pairs[i * 2] = pop();
           }
           Dict<Object, Object> dict = Dict.of(thread.mutability());
           for (int i = 0; i < count; i++) {
@@ -420,14 +464,13 @@ public final class StarlarkGoInterpreter {
                 "too %s values to unpack (expected %d, got %d)",
                 elements.size() < count ? "few" : "many", count, elements.size());
           }
-          // Push in forward order (rightmost on top)
           for (Object elem : elements) {
             push(elem);
           }
           break;
         }
 
-        // ===== Indexing (starlark-go: INDEX, SETINDEX) =====
+        // ===== Indexing (starlark-rust: ArrayIndex, SetArrayIndex) =====
         case INDEX: {
           Object key = pop();
           Object obj = pop();
@@ -452,7 +495,7 @@ public final class StarlarkGoInterpreter {
           break;
         }
 
-        // ===== Attributes (starlark-go: ATTR, SETFIELD) =====
+        // ===== Attributes =====
         case LOAD_ATTR: {
           String name = (String) code.getConstantPool().getConstant(instr.getOperand1());
           Object obj = pop();
@@ -468,15 +511,13 @@ public final class StarlarkGoInterpreter {
           break;
         }
 
-        // ===== Function Calls (starlark-go: CALL, CALL_VAR, CALL_KW) =====
+        // ===== Function Calls =====
         case CALL: {
-          if (stats != null) stats.functionCalls++;
           int posArgs = instr.getOperand1();
           int encodedKwArgs = instr.getOperand2();
           boolean hasStarStar = (encodedKwArgs & 0x8000) != 0;
           int kwArgs = encodedKwArgs & 0x7FFF;
 
-          // Handle **kwargs
           Map<String, Object> starStarDict = null;
           if (hasStarStar) {
             Object kwObj = pop();
@@ -492,7 +533,6 @@ public final class StarlarkGoInterpreter {
             }
           }
 
-          // Collect keyword args
           Map<String, Object> kwargs = new HashMap<>();
           for (int i = 0; i < kwArgs; i++) {
             Object value = pop();
@@ -503,7 +543,6 @@ public final class StarlarkGoInterpreter {
             kwargs.put(key, value);
           }
 
-          // Merge **kwargs
           if (starStarDict != null) {
             for (Map.Entry<String, Object> e : starStarDict.entrySet()) {
               if (kwargs.containsKey(e.getKey())) {
@@ -513,7 +552,6 @@ public final class StarlarkGoInterpreter {
             }
           }
 
-          // Collect positional args
           List<Object> posArgList = new ArrayList<>(posArgs);
           for (int i = 0; i < posArgs; i++) {
             posArgList.add(0, pop());
@@ -527,7 +565,7 @@ public final class StarlarkGoInterpreter {
         case RETURN:
           return pop();
 
-        // ===== Control Flow (starlark-go: JMP, CJMP) =====
+        // ===== Control Flow (starlark-rust: Br, IfBr, IfNotBr) =====
         case JUMP:
           pc = instr.getOperand1() - 1;
           break;
@@ -556,9 +594,8 @@ public final class StarlarkGoInterpreter {
           }
           break;
 
-        // ===== Iteration (starlark-go: ITERPUSH, ITERJMP, ITERPOP) =====
+        // ===== Iteration =====
         case GET_ITER: {
-          if (stats != null) stats.iterations++;
           Object iterable = pop();
           if (iterable instanceof String) {
             throw new EvalException("type 'string' is not iterable");
@@ -642,35 +679,6 @@ public final class StarlarkGoInterpreter {
     return Starlark.NONE;
   }
 
-  // Stack operations
-  private void push(Object value) {
-    stack.add(value);
-    if (stats != null) stats.stackOperations++;
-  }
-
-  private Object pop() throws EvalException {
-    if (stack.isEmpty()) {
-      throw new EvalException("stack underflow");
-    }
-    if (stats != null) stats.stackOperations++;
-    return stack.remove(stack.size() - 1);
-  }
-
-  private Object peek() throws EvalException {
-    if (stack.isEmpty()) {
-      throw new EvalException("stack underflow");
-    }
-    return stack.get(stack.size() - 1);
-  }
-
-  private Object stackGet(int offset) throws EvalException {
-    int index = stack.size() - offset;
-    if (index < 0 || index >= stack.size()) {
-      throw new EvalException("stack index out of range: " + offset);
-    }
-    return stack.get(index);
-  }
-
   private void binaryOp(TokenKind op) throws EvalException, InterruptedException {
     Object b = pop();
     Object a = pop();
@@ -684,12 +692,12 @@ public final class StarlarkGoInterpreter {
     return "?";
   }
 
-  /** Callable wrapper for starlark-go style execution. */
-  private static class GoStyleCallable implements StarlarkCallable {
+  /** Callable wrapper for starlark-rust style execution. */
+  private static class RustStyleCallable implements StarlarkCallable {
     private final String name;
     private final Location location;
 
-    GoStyleCallable(String name, String filename) {
+    RustStyleCallable(String name, String filename) {
       this.name = name != null ? name : "<toplevel>";
       this.location = filename != null
           ? Location.fromFileLineColumn(filename, 0, 0)
@@ -704,7 +712,7 @@ public final class StarlarkGoInterpreter {
 
     @Override
     public Object call(StarlarkThread thread, Tuple args, Dict<String, Object> kwargs) {
-      throw new UnsupportedOperationException("GoStyleCallable should not be called directly");
+      throw new UnsupportedOperationException("RustStyleCallable should not be called directly");
     }
   }
 }

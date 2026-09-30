@@ -15,8 +15,11 @@
 package net.starlark.java.eval.compiler;
 
 import java.util.Map;
+import net.starlark.java.eval.BuckStyleInterpreter;
 import net.starlark.java.eval.BytecodeInterpreter;
 import net.starlark.java.eval.EvalException;
+import net.starlark.java.eval.StarlarkGoInterpreter;
+import net.starlark.java.eval.StarlarkRustInterpreter;
 import net.starlark.java.eval.StarlarkThread;
 
 /**
@@ -28,6 +31,7 @@ import net.starlark.java.eval.StarlarkThread;
  *   <li>{@link BytecodeTarget#INTERPRETER} - Default interpreter
  *   <li>{@link BytecodeTarget#STARLARK_GO} - starlark-go style (stack-based)
  *   <li>{@link BytecodeTarget#STARLARK_RUST} - starlark-rust style (slot-based)
+ *   <li>{@link BytecodeTarget#BUCK} - Buck/Starlark style (IR-based with optimizations)
  * </ul>
  *
  * <h2>Usage Examples</h2>
@@ -136,6 +140,9 @@ public final class BytecodeExecutor {
       case STARLARK_RUST:
         return StarlarkRustInterpreter.execute(chunk, thread, globals, filename);
 
+      case BUCK:
+        return BuckStyleInterpreter.execute(chunk, thread, globals, filename);
+
       case INTERPRETER:
       default:
         return BytecodeInterpreter.execute(chunk, thread, globals, filename);
@@ -191,6 +198,9 @@ public final class BytecodeExecutor {
       case STARLARK_RUST:
         return StarlarkRustInterpreter.executeWithArgs(chunk, thread, args, globals, filename);
 
+      case BUCK:
+        return BuckStyleInterpreter.executeWithArgs(chunk, thread, args, globals, filename);
+
       case INTERPRETER:
       default:
         return BytecodeInterpreter.executeWithArgs(chunk, thread, args, globals, filename);
@@ -205,6 +215,7 @@ public final class BytecodeExecutor {
       case INTERPRETER:
       case STARLARK_GO:
       case STARLARK_RUST:
+      case BUCK:
         return true;
       default:
         return false;

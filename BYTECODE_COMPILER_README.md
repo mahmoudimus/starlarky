@@ -357,6 +357,7 @@ The bytecode compiler supports multiple compilation targets through a pluggable 
 | `INTERPRETER` | `.stc` | Default bytecode interpreter execution |
 | `STARLARK_GO` | `.stc` | starlark-go style stack-based interpreter |
 | `STARLARK_RUST` | `.stc` | starlark-rust style slot-based interpreter |
+| `BUCK` | `.stc` | Buck/Starlark style IR-based interpreter |
 | `JVM` | `.class` | Native JVM class files |
 | `WASM` | `.wat` | WebAssembly text format |
 
@@ -367,6 +368,7 @@ The bytecode compiler supports multiple compilation targets through a pluggable 
 | `INTERPRETER` | Stack-based | Separate stack + locals | Default, most tested |
 | `STARLARK_GO` | Stack-based | Separate stack + locals | google/starlark-go compatibility |
 | `STARLARK_RUST` | Slot-based | Unified slots array | Cache locality, performance |
+| `BUCK` | IR-based | Slots + call cache | Optimization, call site caching |
 
 #### starlark-go Style (Stack-Based)
 
@@ -404,6 +406,22 @@ Object result = StarlarkRustInterpreter.execute(chunk, thread, globals);
 
 // Or via unified executor
 Object result = BytecodeExecutor.execute(chunk, thread, globals, BytecodeTarget.STARLARK_RUST);
+```
+
+#### Buck/Starlark Style (IR-Based)
+
+Follows the [facebook/buck](https://github.com/facebook/buck/tree/dev/starlark) Starlark execution model:
+- IR-based intermediate representation layer
+- Slot-based variable management (Local, Global, Cell, Free)
+- Call site caching for repeated method calls
+- Type-specialized operations (PLUS_STRING, PLUS_LIST)
+
+```java
+// Execute with Buck-style interpreter
+Object result = BuckStyleInterpreter.execute(chunk, thread, globals);
+
+// Or via unified executor
+Object result = BytecodeExecutor.execute(chunk, thread, globals, BytecodeTarget.BUCK);
 ```
 
 ### Using the Backend API
@@ -558,6 +576,7 @@ libstarlark/src/main/java/net/starlark/java/
 │       ├── BytecodeCompiler.java       # AST → Bytecode
 │       ├── StarlarkGoInterpreter.java  # starlark-go style executor
 │       ├── StarlarkRustInterpreter.java # starlark-rust style executor
+│       ├── BuckStyleInterpreter.java   # Buck/Starlark style executor
 │       ├── BytecodeExecutor.java       # Unified execution interface
 │       ├── WasmGenerator.java          # Bytecode → WASM
 │       ├── BytecodeSerializer.java     # Serialization

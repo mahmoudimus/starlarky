@@ -68,6 +68,21 @@ public enum BytecodeTarget {
   STARLARK_RUST("starlark-rust", "stc", "Starlark-Rust Style Interpreter"),
 
   /**
+   * Execute bytecode using the Buck/Starlark style interpreter.
+   *
+   * <p>This follows the facebook/buck Starlark execution model:
+   * <ul>
+   *   <li>IR-based intermediate representation for optimization
+   *   <li>Slot-based variable management (Local, Global, Cell, Free)
+   *   <li>Call site caching for repeated method calls
+   *   <li>Type-specialized operations (PLUS_STRING, PLUS_LIST)
+   * </ul>
+   *
+   * @see BuckStyleInterpreter
+   */
+  BUCK("buck", "stc", "Buck/Starlark Style Interpreter"),
+
+  /**
    * Compile to JVM bytecode (.class files).
    *
    * <p>This generates valid Java class files that can be loaded and executed

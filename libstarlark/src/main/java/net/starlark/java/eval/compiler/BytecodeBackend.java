@@ -85,6 +85,8 @@ public interface BytecodeBackend {
         return new StarlarkGoBackend();
       case STARLARK_RUST:
         return new StarlarkRustBackend();
+      case BUCK:
+        return new BuckBackend();
       case INTERPRETER:
       default:
         return new InterpreterBackend();
@@ -220,6 +222,42 @@ public interface BytecodeBackend {
     @Override
     public String toString() {
       return "StarlarkRustBackend{slot-based interpreter following facebook/starlark-rust model}";
+    }
+  }
+
+  /**
+   * Backend that executes bytecode using the Buck/Starlark style interpreter.
+   *
+   * <p>This follows the facebook/buck Starlark execution model:
+   * <ul>
+   *   <li>IR-based intermediate representation for optimization
+   *   <li>Slot-based variable management (Local, Global, Cell, Free)
+   *   <li>Call site caching for repeated method calls
+   *   <li>Type-specialized operations (PLUS_STRING, PLUS_LIST)
+   * </ul>
+   *
+   * @see BuckStyleInterpreter
+   */
+  class BuckBackend implements BytecodeBackend {
+    @Override
+    public BytecodeTarget getTarget() {
+      return BytecodeTarget.BUCK;
+    }
+
+    @Override
+    public byte[] generate(BytecodeChunk chunk, String className, String sourceFile)
+        throws IOException {
+      // This backend is for interpretation, not code generation
+      throw new UnsupportedOperationException(
+          "BuckBackend is an interpreter backend - use BuckStyleInterpreter.execute() directly");
+    }
+
+    /**
+     * Returns a description of this backend for debugging.
+     */
+    @Override
+    public String toString() {
+      return "BuckBackend{IR-based interpreter following facebook/buck model with call site caching}";
     }
   }
 }
