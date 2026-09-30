@@ -277,6 +277,7 @@ final class JvmBytecodeCompiler {
       case SWAP:
       case ROT_THREE:
       case NOP:
+      case TYPE_ALIAS:
       case BIT_NOT:
       case NEGATE:
       case POSITIVE:
@@ -1115,6 +1116,12 @@ final class JvmBytecodeCompiler {
           constantString(a);
           load(top);
           ops("postAssign", "(" + BCFRAME + STR + OBJ + ")V");
+          return;
+        case TYPE_ALIAS:
+          setIp(i);
+          frame();
+          constant(a);
+          ops("typeAlias", "(" + BCFRAME + OBJ + ")V");
           return;
         case MAKE_FUNCTION:
           {
