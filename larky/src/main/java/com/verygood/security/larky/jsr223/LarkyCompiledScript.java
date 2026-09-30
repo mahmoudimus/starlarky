@@ -29,6 +29,7 @@ import net.starlark.java.eval.compiler.MultiTargetCompiler;
 import net.starlark.java.eval.compiler.WasmGenerator;
 import net.starlark.java.syntax.FileOptions;
 import net.starlark.java.syntax.ParserInput;
+import net.starlark.java.syntax.Resolver;
 import net.starlark.java.syntax.Program;
 import net.starlark.java.syntax.StarlarkFile;
 import net.starlark.java.syntax.SyntaxError;
@@ -133,8 +134,18 @@ public class LarkyCompiledScript extends CompiledScript {
         throw new SyntaxError.Exception(file.errors());
       }
 
-      // Resolve and compile
-      this.cachedProgram = Program.compileFile(file, Module.create());
+      // Resolve and compile. Globals supplied through JSR-223 bindings are only known at
+      // eval time, so any name that is not a universal builtin resolves as predeclared here.
+      // Real resolution against the bindings happens again in eval().
+      Module universe = Module.create();
+      Resolver.Module lenient = name -> {
+        try {
+          return universe.resolve(name);
+        } catch (Resolver.Module.Undefined e) {
+          return Resolver.Scope.PREDECLARED;
+        }
+      };
+      this.cachedProgram = Program.compileFile(file, lenient, /*enableBytecode=*/ true);
 
       // Get bytecode from program
       this.cachedBytecode = cachedProgram.getBytecode();
@@ -176,12 +187,12 @@ public class LarkyCompiledScript extends CompiledScript {
     Bindings globalBindings = context.getBindings(ScriptContext.GLOBAL_SCOPE);
     Bindings engineBindings = context.getBindings(ScriptContext.ENGINE_SCOPE);
 
-    // If we have cached bytecode and not in INTERPRETED mode, use it
-    if (cachedBytecode != null && compilationMode != CompilationMode.INTERPRETED) {
+    // JVM mode runs the generated class directly. The other modes go through the Larky
+    // interpreter so bindings, load() and print() behave the same; it executes on the
+    // bytecode VM when -Dstarlark.bytecode=true.
+    if (compilationMode == CompilationMode.JVM && cachedJvmProgram != null) {
       return evalWithBytecode(context, globalBindings, engineBindings);
     }
-
-    // Fall back to traditional interpretation
     return evalInterpreted(context, globalBindings, engineBindings);
   }
 
@@ -233,14 +244,14 @@ public class LarkyCompiledScript extends CompiledScript {
   }
 
   /**
-   * Evaluates using traditional tree-walking interpretation.
+   * Evaluates through the Larky interpreter (bytecode VM when -Dstarlark.bytecode=true).
    */
   private Object evalInterpreted(ScriptContext context, Bindings globalBindings, Bindings engineBindings)
       throws LarkyEvaluationScriptException {
     ParsedStarFile result;
 
-    try (Reader reader = context.getReader()) {
-      String source = cachedSource != null ? cachedSource : CharStreams.toString(reader);
+    try {
+      String source = cachedSource != null ? cachedSource : readAndClose(context.getReader());
       String scriptName = cachedScriptName != null ? cachedScriptName : DEFAULT_SCRIPT_NAME;
 
       final StarFile script = InMemMapBackedStarFile.createStarFile(scriptName, source);
@@ -252,6 +263,16 @@ public class LarkyCompiledScript extends CompiledScript {
     }
     setBindingsValue(globalBindings, engineBindings, result.getGlobals());
     return result;
+  }
+
+  /**
+   * Reads the script from the context reader. Only used when no source was compiled; the
+   * default JSR-223 reader wraps System.in, so it must not be opened otherwise.
+   */
+  private static String readAndClose(Reader reader) throws IOException {
+    try (Reader r = reader) {
+      return CharStreams.toString(r);
+    }
   }
 
   private void setBindingsValue(Bindings globalBindings, Bindings engineBindings, Map<String, Object> moduleGlobals) {
@@ -336,6 +357,6 @@ public class LarkyCompiledScript extends CompiledScript {
    * Returns true if this script supports the given target.
    */
   public boolean supportsTarget(BytecodeTarget target) {
-    return cachedBytecode != null;
+    return cachedBytecode != null && target.isCodeGenerator();
   }
 }

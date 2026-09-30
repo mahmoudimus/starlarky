@@ -70,23 +70,26 @@ public class JSR223ErrorConsistencyTest {
   // ==================== Undefined Variable Tests ====================
 
   @Test
-  public void testUndefinedVariableConsistency() {
+  public void testUndefinedVariableConsistency() throws ScriptException {
     String script = "result = undefined_variable + 1\n";
 
-    ScriptException interpretedError = compileWithMode(script, LarkyCompiledScript.CompilationMode.INTERPRETED);
-    ScriptException bytecodeError = compileWithMode(script, LarkyCompiledScript.CompilationMode.BYTECODE);
+    // Globals may be supplied through bindings at eval time, so an undefined name is
+    // reported when the script is evaluated, not when it is compiled.
+    assertNull("INTERPRETED compile should succeed",
+        compileWithMode(script, LarkyCompiledScript.CompilationMode.INTERPRETED));
+    assertNull("BYTECODE compile should succeed",
+        compileWithMode(script, LarkyCompiledScript.CompilationMode.BYTECODE));
 
-    // Both should fail during compilation/resolution
-    assertNotNull("INTERPRETED should fail", interpretedError);
-    assertNotNull("BYTECODE should fail", bytecodeError);
+    LarkyEvaluationScriptException interpretedError =
+        evalWithMode(script, LarkyCompiledScript.CompilationMode.INTERPRETED);
+    LarkyEvaluationScriptException bytecodeError =
+        evalWithMode(script, LarkyCompiledScript.CompilationMode.BYTECODE);
 
-    System.out.println("=== Undefined Variable Consistency ===");
-    System.out.println("INTERPRETED: " + interpretedError.getMessage());
-    System.out.println("BYTECODE: " + bytecodeError.getMessage());
-
-    // Both should mention the undefined variable
-    assertErrorRelated(interpretedError, "undefined", "unbound", "not found");
-    assertErrorRelated(bytecodeError, "undefined", "unbound", "not found");
+    assertNotNull("INTERPRETED eval should fail", interpretedError);
+    assertNotNull("BYTECODE eval should fail", bytecodeError);
+    assertErrorRelated(interpretedError, "undefined_variable");
+    assertErrorRelated(bytecodeError, "undefined_variable");
+    assertEquals(interpretedError.getMessage(), bytecodeError.getMessage());
   }
 
   // ==================== Runtime Error Tests ====================
@@ -258,9 +261,13 @@ public class JSR223ErrorConsistencyTest {
 
     LarkyCompiledScript compiled = engine.compile(script, "greet.star");
 
-    // Test all targets via the generic method
+    // Code-generating targets produce an artifact; interpreter targets execute directly.
     for (BytecodeTarget target : BytecodeTarget.values()) {
-      assertTrue("Should support " + target, compiled.supportsTarget(target));
+      assertEquals("supportsTarget(" + target + ")",
+          target.isCodeGenerator(), compiled.supportsTarget(target));
+      if (!target.isCodeGenerator()) {
+        continue;
+      }
 
       byte[] output = compiled.getOutputForTarget(target);
       assertNotNull("Output for " + target + " should not be null", output);
