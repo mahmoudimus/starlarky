@@ -97,6 +97,14 @@ public class ProgramCacheTest {
   }
 
   @Test
+  public void compilesEachDistinctScriptOnce() throws Exception {
+    for (String source : new String[] {"x = 1\n", "x = 1\n", "x = 2\n", "x = 1\n"}) {
+      newEvaluator().eval(InMemMapBackedStarFile.createStarFile("main.star", source));
+    }
+    assertThat(ProgramCache.scriptCount()).isEqualTo(2);
+  }
+
+  @Test
   public void usesPrecompiledModulesWhenBytecodeIsEnabled() throws Exception {
     newEvaluator().eval(ResourceContentStarFile.buildStarFile("@stdlib//sets"));
     if (net.starlark.java.eval.compiler.BytecodeCompiler.enabledByDefault()) {

@@ -166,6 +166,56 @@ final class ProgramCache {
     return executable;
   }
 
+  // ---- scripts (not Larky's own modules): e.g. a customer script evaluated per request ----
+
+  private record ScriptKey(
+      String path, String source, FileOptions options, StarlarkSemantics semantics,
+      boolean bytecode) {}
+
+  private static final int MAX_SCRIPTS = Integer.getInteger("larky.scriptCache.size", 1000);
+
+  private static final com.google.common.cache.Cache<ScriptKey, Entry> SCRIPTS =
+      com.google.common.cache.CacheBuilder.newBuilder().maximumSize(MAX_SCRIPTS).build();
+
+  /**
+   * Returns the compiled program for a script, compiling it with {@code compiler} unless a program
+   * compiled from the identical source resolves the same way in {@code module}'s environment.
+   * Keyed by the full source text, so different scripts never share an entry.
+   */
+  static Executable getScript(
+      String path,
+      String source,
+      Module module,
+      FileOptions options,
+      StarlarkSemantics semantics,
+      Compiler compiler)
+      throws EvalException {
+    if (DISABLED || MAX_SCRIPTS <= 0) {
+      return Executable.of(compiler.compile(new StarlarkFile[1]));
+    }
+    ScriptKey key =
+        new ScriptKey(path, source, options, semantics, BytecodeCompiler.enabledByDefault());
+    Entry cached = SCRIPTS.getIfPresent(key);
+    if (cached != null && cached.validity().resolvesTheSameIn(module)) {
+      return cached.executable();
+    }
+    StarlarkFile[] parsed = new StarlarkFile[1];
+    Program program = compiler.compile(parsed);
+    if (parsed[0] == null) {
+      return Executable.of(program);
+    }
+    ImmutableSet<String> predeclared = namesOf(parsed[0], Resolver.Scope.PREDECLARED);
+    ImmutableSet<String> universal = namesOf(parsed[0], Resolver.Scope.UNIVERSAL);
+    Executable executable = Executable.of(program, predeclared);
+    SCRIPTS.put(key, new Entry(executable, validity(predeclared, universal)));
+    return executable;
+  }
+
+  /** Number of cached scripts, for tests. */
+  static long scriptCount() {
+    return SCRIPTS.size();
+  }
+
   /** Reads the precompiled form of a {@code .star} resource, or returns null. */
   private static CompiledModule precompiled(String path) {
     if (!path.endsWith(LarkyPrecompiler.SOURCE_SUFFIX)) {
@@ -227,6 +277,7 @@ final class ProgramCache {
   /** Empties the cache, for tests. */
   static void clear() {
     CACHE.clear();
+    SCRIPTS.invalidateAll();
     loadedPrecompiled.set(0);
     compiledFromSource.set(0);
   }

@@ -147,8 +147,7 @@ public final class LarkyEvaluator {
                 parsed -> compileStarlarkProgram(
                     env, ParserInput.fromUTF8(resource.readContentBytes(), resource.path()), options,
                     parsed))
-            : ProgramCache.Executable.of(compileStarlarkProgram(
-                module, ParserInput.fromUTF8(content.readContentBytes(), content.path()), options));
+            : scriptProgram(content, module, options);
     Map<String, Module> loadedModules = processLoads(content, prog.loads());
 
     Object starlarkOutput;
@@ -312,6 +311,20 @@ public final class LarkyEvaluator {
 
   @NotNull
   @VisibleForTesting
+  /** Compiles (or finds cached) a script that is not one of Larky's own modules. */
+  private ProgramCache.Executable scriptProgram(StarFile content, Module module, FileOptions options)
+      throws IOException, EvalException {
+    byte[] bytes = content.readContentBytes();
+    return ProgramCache.getScript(
+        content.path(),
+        new String(bytes, java.nio.charset.StandardCharsets.UTF_8),
+        module,
+        options,
+        getLarkySemantics(),
+        parsed -> compileStarlarkProgram(
+            module, ParserInput.fromUTF8(bytes, content.path()), options, parsed));
+  }
+
   Map<String, Module> processLoads(StarFile content, List<String> loads) {
     Map<String, Module> loadedModules = new HashMap<>();
     LarkyLoader larkyLoader = new LarkyLoader(content, this);

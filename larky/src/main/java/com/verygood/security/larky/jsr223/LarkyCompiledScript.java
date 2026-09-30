@@ -4,6 +4,7 @@ import com.google.common.io.CharStreams;
 import java.io.IOException;
 import java.io.Reader;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import com.verygood.security.larky.parser.DefaultLarkyInterpreter;
@@ -124,54 +125,66 @@ public class LarkyCompiledScript extends CompiledScript {
    * @param scriptName the script name for error reporting
    * @throws LarkyEvaluationScriptException if compilation fails
    */
+  // Scripts compiled by compile(), by (source, name): a service compiling the same script for
+  // every request parses and resolves it once. Programs are immutable, so they can be shared.
+  private static final com.google.common.cache.Cache<List<String>, Program> COMPILED =
+      com.google.common.cache.CacheBuilder.newBuilder()
+          .maximumSize(Integer.getInteger("larky.scriptCache.size", 1000))
+          .build();
+
+  private static Program compileSource(String source, String scriptName)
+      throws SyntaxError.Exception {
+    // Parse the script
+    ParserInput input = ParserInput.fromString(source, scriptName);
+    StarlarkFile file = StarlarkFile.parse(input, FileOptions.DEFAULT);
+
+    if (!file.ok()) {
+      throw new SyntaxError.Exception(file.errors());
+    }
+
+    // Resolve and compile. Globals supplied through JSR-223 bindings are only known at
+    // eval time, so any name that is not a universal builtin resolves as predeclared here.
+    // Real resolution against the bindings happens again in eval().
+    Module universe = Module.create();
+    Resolver.Module lenient = new Resolver.Module() {
+      @Override
+      public Resolver.Scope resolve(String name, boolean resolveTypeSyntax) {
+        try {
+          return universe.resolve(name, resolveTypeSyntax);
+        } catch (Resolver.Module.Undefined e) {
+          return Resolver.Scope.PREDECLARED;
+        }
+      }
+
+      @Override
+      public StarlarkType getPredeclaredSymbolType(String name) {
+        return universe.getPredeclaredSymbolType(name);
+      }
+
+      @Override
+      public StarlarkType getUniversalSymbolType(String name) {
+        return universe.getUniversalSymbolType(name);
+      }
+
+      @Override
+      public TypeConstructor getTypeConstructor(String name) throws Resolver.Module.Undefined {
+        return universe.getTypeConstructor(name);
+      }
+
+      @Override
+      public TypeContext getTypeContext() {
+        return universe.getTypeContext();
+      }
+    };
+    return Program.compileFile(file, lenient, /*enableBytecode=*/ true);
+  }
+
   public void compile(String source, String scriptName) throws LarkyEvaluationScriptException {
     try {
       this.cachedSource = source;
       this.cachedScriptName = scriptName;
 
-      // Parse the script
-      ParserInput input = ParserInput.fromString(source, scriptName);
-      StarlarkFile file = StarlarkFile.parse(input, FileOptions.DEFAULT);
-
-      if (!file.ok()) {
-        throw new SyntaxError.Exception(file.errors());
-      }
-
-      // Resolve and compile. Globals supplied through JSR-223 bindings are only known at
-      // eval time, so any name that is not a universal builtin resolves as predeclared here.
-      // Real resolution against the bindings happens again in eval().
-      Module universe = Module.create();
-      Resolver.Module lenient = new Resolver.Module() {
-        @Override
-        public Resolver.Scope resolve(String name, boolean resolveTypeSyntax) {
-          try {
-            return universe.resolve(name, resolveTypeSyntax);
-          } catch (Resolver.Module.Undefined e) {
-            return Resolver.Scope.PREDECLARED;
-          }
-        }
-
-        @Override
-        public StarlarkType getPredeclaredSymbolType(String name) {
-          return universe.getPredeclaredSymbolType(name);
-        }
-
-        @Override
-        public StarlarkType getUniversalSymbolType(String name) {
-          return universe.getUniversalSymbolType(name);
-        }
-
-        @Override
-        public TypeConstructor getTypeConstructor(String name) throws Resolver.Module.Undefined {
-          return universe.getTypeConstructor(name);
-        }
-
-        @Override
-        public TypeContext getTypeContext() {
-          return universe.getTypeContext();
-        }
-      };
-      this.cachedProgram = Program.compileFile(file, lenient, /*enableBytecode=*/ true);
+      this.cachedProgram = COMPILED.get(List.of(source, scriptName), () -> compileSource(source, scriptName));
 
       // Get bytecode from program
       this.cachedBytecode = cachedProgram.getBytecode();
@@ -181,7 +194,11 @@ public class LarkyCompiledScript extends CompiledScript {
         this.cachedJvmProgram = CompiledStarlarkLoader.compile(cachedBytecode);
       }
 
-    } catch (SyntaxError.Exception | IOException e) {
+    } catch (java.util.concurrent.ExecutionException
+        | com.google.common.util.concurrent.UncheckedExecutionException e) {
+      throw LarkyEvaluationScriptException.of(
+          e.getCause() instanceof Exception cause ? cause : e);
+    } catch (IOException e) {
       throw LarkyEvaluationScriptException.of(e);
     }
   }
