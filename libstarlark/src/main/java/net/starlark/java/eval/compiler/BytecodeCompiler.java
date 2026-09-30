@@ -19,6 +19,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import net.starlark.java.eval.StarlarkFloat;
+import net.starlark.java.eval.StarlarkInt;
 import net.starlark.java.syntax.*;
 
 /**
@@ -294,16 +296,41 @@ public final class BytecodeCompiler {
   public void visit(DefStatement node) {
     int lineNum = getLine(node);
 
-    // For now, we'll compile function definitions as constants
-    // and create function objects at runtime
-    // This is a simplified implementation
-
     Identifier id = node.getIdentifier();
-    int nameIndex = builder.addConstant(id.getName());
+    String funcName = id.getName();
+    Location funcLocation = id.getStartLocation();
 
-    // TODO: Recursively compile the function body
-    // For now, just store a placeholder
-    builder.emit(Opcode.MAKE_FUNCTION, 0, lineNum);
+    // Extract parameter names
+    List<String> paramNames = new ArrayList<>();
+    for (Parameter param : node.getParameters()) {
+      paramNames.add(param.getIdentifier().getName());
+    }
+
+    // Create a new compiler for the function body
+    BytecodeCompiler funcCompiler = new BytecodeCompiler(funcName);
+    funcCompiler.builder.setParameterCount(paramNames.size());
+
+    // Compile function body statements
+    for (Statement stmt : node.getBody()) {
+      funcCompiler.compileStatement(stmt);
+    }
+
+    // Ensure function returns None if no explicit return
+    funcCompiler.builder.emit(Opcode.LOAD_NONE, lineNum);
+    funcCompiler.builder.emit(Opcode.RETURN, lineNum);
+
+    BytecodeChunk funcChunk = funcCompiler.builder.build();
+
+    // Create function descriptor with all metadata
+    FunctionDescriptor descriptor = new FunctionDescriptor(
+        funcName,
+        funcLocation,
+        funcChunk,
+        com.google.common.collect.ImmutableList.copyOf(paramNames));
+
+    // Store descriptor as constant and emit MAKE_FUNCTION
+    int descriptorIndex = builder.addConstant(descriptor);
+    builder.emit(Opcode.MAKE_FUNCTION, descriptorIndex, lineNum);
 
     // Store function in variable
     storeVariable(id);
@@ -365,12 +392,25 @@ public final class BytecodeCompiler {
   }
 
   public void visit(IntLiteral node) {
-    int index = builder.addConstant(node.getValue());
+    // Convert Number to StarlarkInt for proper runtime behavior
+    Number value = node.getValue();
+    Object starlarkValue;
+    if (value instanceof Integer) {
+      starlarkValue = StarlarkInt.of(value.intValue());
+    } else if (value instanceof Long) {
+      starlarkValue = StarlarkInt.of(value.longValue());
+    } else if (value instanceof java.math.BigInteger) {
+      starlarkValue = StarlarkInt.of((java.math.BigInteger) value);
+    } else {
+      starlarkValue = StarlarkInt.of(value.longValue());
+    }
+    int index = builder.addConstant(starlarkValue);
     builder.emit(Opcode.LOAD_CONST, index, getLine(node));
   }
 
   public void visit(FloatLiteral node) {
-    int index = builder.addConstant(node.getValue());
+    // Convert to StarlarkFloat
+    int index = builder.addConstant(StarlarkFloat.of(node.getValue()));
     builder.emit(Opcode.LOAD_CONST, index, getLine(node));
   }
 
