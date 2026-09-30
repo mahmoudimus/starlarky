@@ -15,7 +15,6 @@
 package net.starlark.java.eval;
 
 import net.starlark.java.annot.StarlarkBuiltin;
-import net.starlark.java.syntax.Resolver;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableList;
@@ -25,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import javax.annotation.Nullable;
 import net.starlark.java.eval.compiler.BytecodeChunk;
+import net.starlark.java.eval.compiler.ComprehensionScope;
 import net.starlark.java.spelling.SpellChecker;
 import net.starlark.java.syntax.Location;
 
@@ -280,7 +280,7 @@ public final class BytecodeFunction implements UserDefinedFunction {
     if (locals == null) {
       return;
     }
-    List<Resolver.Binding> bindings = chunk.getLocalBindings();
+    List<ComprehensionScope> scopes = chunk.getLocalScopes();
     List<String> names = chunk.getLocalNames();
     for (int i = 0; i < locals.length && i < names.size(); i++) {
       Object local = locals[i];
@@ -290,9 +290,7 @@ public final class BytecodeFunction implements UserDefinedFunction {
       if (local == null) {
         continue;
       }
-      if (i < bindings.size()
-          && bindings.get(i) instanceof Resolver.ComprehensionBinding comprehensionBinding
-          && !comprehensionBinding.inScope(loc)) {
+      if (i < scopes.size() && scopes.get(i) != null && !scopes.get(i).inScope(loc)) {
         continue;
       }
       env.put(names.get(i), local);

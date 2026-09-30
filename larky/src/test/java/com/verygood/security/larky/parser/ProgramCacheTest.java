@@ -35,7 +35,7 @@ public class ProgramCacheTest {
     ProgramCache.clear();
   }
 
-  private Program get(Module module) throws EvalException {
+  private ProgramCache.Executable get(Module module) throws EvalException {
     return ProgramCache.get(
         "test/cached.star",
         module,
@@ -61,17 +61,17 @@ public class ProgramCacheTest {
 
   @Test
   public void reusesProgramForTheSameEnvironment() throws Exception {
-    Program first = get(env(ImmutableMap.of("x", StarlarkInt.of(1))));
-    Program second = get(env(ImmutableMap.of("x", StarlarkInt.of(2))));
+    ProgramCache.Executable first = get(env(ImmutableMap.of("x", StarlarkInt.of(1))));
+    ProgramCache.Executable second = get(env(ImmutableMap.of("x", StarlarkInt.of(2))));
     assertThat(second).isSameInstanceAs(first);
     assertThat(compiles.get()).isEqualTo(1);
   }
 
   @Test
   public void reusesProgramWhenUnreferencedNamesChange() throws Exception {
-    Program first = get(env(ImmutableMap.of("x", StarlarkInt.of(1))));
+    ProgramCache.Executable first = get(env(ImmutableMap.of("x", StarlarkInt.of(1))));
     // Per-evaluation bindings (e.g. JSR-223's) the file never mentions don't affect resolution.
-    Program second =
+    ProgramCache.Executable second =
         get(env(ImmutableMap.of("x", StarlarkInt.of(1), "script_input_1234", StarlarkInt.of(0))));
     assertThat(second).isSameInstanceAs(first);
     assertThat(compiles.get()).isEqualTo(1);
@@ -86,9 +86,9 @@ public class ProgramCacheTest {
 
   @Test
   public void recompilesWhenAUniversalNameBecomesPredeclared() throws Exception {
-    Program first = get(env(ImmutableMap.of("x", StarlarkInt.of(1))));
+    ProgramCache.Executable first = get(env(ImmutableMap.of("x", StarlarkInt.of(1))));
     // `len` resolved as UNIVERSAL the first time; a predeclared `len` now shadows it.
-    Program second =
+    ProgramCache.Executable second =
         get(env(ImmutableMap.of("x", StarlarkInt.of(1), "len", StarlarkInt.of(0))));
     assertThat(second).isNotSameInstanceAs(first);
     assertThat(compiles.get()).isEqualTo(2);
@@ -110,6 +110,18 @@ public class ProgramCacheTest {
     Object b = second.module().getGlobal("sets");
     assertThat(a).isNotNull();
     assertThat(b).isNotSameInstanceAs(a);
+  }
+
+  @Test
+  public void usesPrecompiledModulesWhenBytecodeIsEnabled() throws Exception {
+    newEvaluator().eval(ResourceContentStarFile.buildStarFile("@stdlib//sets"));
+    if (net.starlark.java.eval.compiler.BytecodeCompiler.enabledByDefault()) {
+      // stdlib/sets.slbc, written at build time by LarkyPrecompiler.
+      assertThat(ProgramCache.loadedPrecompiledCount()).isGreaterThan(0);
+    } else {
+      assertThat(ProgramCache.loadedPrecompiledCount()).isEqualTo(0);
+      assertThat(ProgramCache.compiledFromSourceCount()).isGreaterThan(0);
+    }
   }
 
   private static LarkyEvaluator newEvaluator() {

@@ -127,7 +127,7 @@ public final class LarkyEvaluator {
     // parse & compile (Larky's own modules come from a process-wide cache)
     FileOptions options = getStarlarkValidationOptions();
     final Module env = module;
-    Program prog =
+    ProgramCache.Executable prog =
         content instanceof ResourceContentStarFile resource
             ? ProgramCache.get(
                 resource.path(),
@@ -137,9 +137,9 @@ public final class LarkyEvaluator {
                 parsed -> compileStarlarkProgram(
                     env, ParserInput.fromUTF8(resource.readContentBytes(), resource.path()), options,
                     parsed))
-            : compileStarlarkProgram(
-                module, ParserInput.fromUTF8(content.readContentBytes(), content.path()), options);
-    Map<String, Module> loadedModules = processLoads(content, prog);
+            : ProgramCache.Executable.of(compileStarlarkProgram(
+                module, ParserInput.fromUTF8(content.readContentBytes(), content.path()), options));
+    Map<String, Module> loadedModules = processLoads(content, prog.loads());
 
     Object starlarkOutput;
 
@@ -159,7 +159,7 @@ public final class LarkyEvaluator {
       }
 
       try {
-        starlarkOutput = Starlark.execFileProgram(prog, module, thread);
+        starlarkOutput = prog.exec(module, thread);
       } catch (EvalException cause) {
         throw new StarlarkEvalWrapper.Exc.RuntimeEvalException(cause, thread);
       }
@@ -273,10 +273,10 @@ public final class LarkyEvaluator {
 
   @NotNull
   @VisibleForTesting
-  Map<String, Module> processLoads(StarFile content, Program prog) {
+  Map<String, Module> processLoads(StarFile content, List<String> loads) {
     Map<String, Module> loadedModules = new HashMap<>();
     LarkyLoader larkyLoader = new LarkyLoader(content, this);
-    for (String load : prog.getLoads()) {
+    for (String load : loads) {
       //Module loadedModule = eval(content.resolve(load + LarkyScript.STAR_EXTENSION));
       Module loadedModule = larkyLoader.load(load);
       loadedModules.put(load, loadedModule);
@@ -315,7 +315,7 @@ public final class LarkyEvaluator {
     return prog;
   }
 
-  private FileOptions getStarlarkValidationOptions() throws EvalException {
+  FileOptions getStarlarkValidationOptions() throws EvalException {
     FileOptions options;
     if (validationMode == LarkyScript.StarlarkMode.STRICT) {
       options = LarkyScript.STARLARK_STRICT_FILE_OPTIONS;

@@ -63,6 +63,28 @@ final class JvmBytecodeCompiler {
     }
   }
 
+  /**
+   * Executions of a chunk on the interpreter before it is compiled: code that runs once or a few
+   * times (a request's own script, a module's top level) is not worth generating a class for.
+   * {@code -Dstarlark.jit.threshold=0} compiles everything on first use.
+   */
+  static int threshold = Integer.getInteger("starlark.jit.threshold", 50);
+
+  /**
+   * Returns the compiled code for {@code chunk} if it has run often enough to be worth compiling
+   * (compiling it now if needed), or null to run it on the interpreter this time.
+   */
+  static JvmCode hotCodeFor(BytecodeChunk chunk) {
+    Object code = chunk.getJitCode();
+    if (code instanceof JvmCode jvmCode) {
+      return jvmCode;
+    }
+    if (code == null && chunk.countExecution() > threshold) {
+      return codeFor(chunk);
+    }
+    return null;
+  }
+
   /** Marks a chunk too large for one JVM method (64KB of bytecode); it stays interpreted. */
   private static final Object TOO_LARGE = new Object();
 
@@ -104,7 +126,7 @@ final class JvmBytecodeCompiler {
   static Object runToplevel(
       BytecodeChunk chunk, StarlarkThread thread, Map<String, Object> globals, String filename)
       throws EvalException, InterruptedException {
-    JvmCode code = codeFor(chunk);
+    JvmCode code = hotCodeFor(chunk);
     if (code == null) {
       return BytecodeInterpreter.execute(chunk, thread, globals, filename);
     }
@@ -127,7 +149,7 @@ final class JvmBytecodeCompiler {
     if (locals.length < chunk.getLocalCount()) {
       locals = Arrays.copyOf(locals, chunk.getLocalCount());
     }
-    JvmCode code = codeFor(chunk);
+    JvmCode code = hotCodeFor(chunk);
     if (code == null) {
       return BytecodeInterpreter.executeWithLocals(chunk, thread, locals, globals, filename, freevars);
     }

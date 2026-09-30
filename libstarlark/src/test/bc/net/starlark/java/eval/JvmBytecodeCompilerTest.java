@@ -34,6 +34,30 @@ public final class JvmBytecodeCompilerTest {
       FileOptions.DEFAULT.toBuilder().allowToplevelRebinding(true).build();
 
   private Module module;
+  private int savedThreshold;
+
+  @org.junit.Before
+  public void compileEverything() {
+    savedThreshold = JvmBytecodeCompiler.threshold;
+    JvmBytecodeCompiler.threshold = 0; // exercise compiled code, not the interpreter
+  }
+
+  @org.junit.After
+  public void restoreThreshold() {
+    JvmBytecodeCompiler.threshold = savedThreshold;
+  }
+
+  @Test
+  public void compilesAChunkOnceItIsHot() throws Exception {
+    JvmBytecodeCompiler.threshold = 3;
+    BytecodeChunk chunk = compile("r = 1\n");
+    for (int i = 0; i < 3; i++) {
+      assertThat(JvmBytecodeCompiler.hotCodeFor(chunk)).isNull(); // interpreted
+    }
+    JvmCode code = JvmBytecodeCompiler.hotCodeFor(chunk);
+    assertThat(code).isNotNull();
+    assertThat(JvmBytecodeCompiler.hotCodeFor(chunk)).isSameInstanceAs(code);
+  }
 
   /** Compiles {@code source} to bytecode and runs it on JVM-compiled code; returns global "r". */
   private Object run(String source) throws Exception {

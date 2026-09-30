@@ -35,6 +35,13 @@ import net.starlark.java.syntax.*;
  */
 public final class BytecodeCompiler {
 
+  /**
+   * Version of the code this compiler emits. Bump it whenever the meaning of compiled output
+   * changes (instruction semantics, operand encoding, constants), so that serialized modules
+   * (CompiledModule) from an older compiler are recompiled instead of run.
+   */
+  public static final int VERSION = 1;
+
   private final BytecodeChunk.Builder builder;
   private final Map<String, Integer> labelOffsets;
   private final List<PatchLocation> jumpsToPatch;
@@ -914,6 +921,24 @@ public final class BytecodeCompiler {
 
   public void visit(Comprehension node) {
     int lineNum = getLine(node);
+
+    // Record where this comprehension's variables are in scope, for the debugger.
+    Comprehension.For first = (Comprehension.For) node.getClauses().get(0);
+    ComprehensionScope scope =
+        new ComprehensionScope(
+            first.getIterable().getStartLocation(),
+            first.getIterable().getEndLocation(),
+            node.getStartLocation(),
+            node.getEndLocation());
+    for (Comprehension.Clause clause : node.getClauses()) {
+      if (clause instanceof Comprehension.For forClause) {
+        for (Identifier id : Identifier.boundIdentifiers(forClause.getVars())) {
+          if (id.getBinding() instanceof Resolver.ComprehensionBinding) {
+            builder.setLocalScope(id.getBinding().getIndex(), scope);
+          }
+        }
+      }
+    }
 
     // Create empty collection
     if (node.isDict()) {
