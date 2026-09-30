@@ -81,6 +81,10 @@ public interface BytecodeBackend {
         return new JvmBackend();
       case WASM:
         return new WasmBackend();
+      case STARLARK_GO:
+        return new StarlarkGoBackend();
+      case STARLARK_RUST:
+        return new StarlarkRustBackend();
       case INTERPRETER:
       default:
         return new InterpreterBackend();
@@ -146,6 +150,76 @@ public interface BytecodeBackend {
     @Override
     public boolean isTextOutput() {
       return true;
+    }
+  }
+
+  /**
+   * Backend that executes bytecode using the starlark-go style interpreter.
+   *
+   * <p>This follows the google/starlark-go execution model:
+   * <ul>
+   *   <li>Stack-based virtual machine with separate operand stack
+   *   <li>Local variables stored in a separate array
+   *   <li>Simple switch-based opcode dispatch
+   * </ul>
+   *
+   * @see StarlarkGoInterpreter
+   */
+  class StarlarkGoBackend implements BytecodeBackend {
+    @Override
+    public BytecodeTarget getTarget() {
+      return BytecodeTarget.STARLARK_GO;
+    }
+
+    @Override
+    public byte[] generate(BytecodeChunk chunk, String className, String sourceFile)
+        throws IOException {
+      // This backend is for interpretation, not code generation
+      throw new UnsupportedOperationException(
+          "StarlarkGoBackend is an interpreter backend - use StarlarkGoInterpreter.execute() directly");
+    }
+
+    /**
+     * Returns a description of this backend for debugging.
+     */
+    @Override
+    public String toString() {
+      return "StarlarkGoBackend{stack-based interpreter following google/starlark-go model}";
+    }
+  }
+
+  /**
+   * Backend that executes bytecode using the starlark-rust style interpreter.
+   *
+   * <p>This follows the facebook/starlark-rust execution model:
+   * <ul>
+   *   <li>Slot-based memory model: unified array for locals AND stack
+   *   <li>Fixed frame size computed at compile time
+   *   <li>Optimized for cache-friendly sequential memory access
+   * </ul>
+   *
+   * @see StarlarkRustInterpreter
+   */
+  class StarlarkRustBackend implements BytecodeBackend {
+    @Override
+    public BytecodeTarget getTarget() {
+      return BytecodeTarget.STARLARK_RUST;
+    }
+
+    @Override
+    public byte[] generate(BytecodeChunk chunk, String className, String sourceFile)
+        throws IOException {
+      // This backend is for interpretation, not code generation
+      throw new UnsupportedOperationException(
+          "StarlarkRustBackend is an interpreter backend - use StarlarkRustInterpreter.execute() directly");
+    }
+
+    /**
+     * Returns a description of this backend for debugging.
+     */
+    @Override
+    public String toString() {
+      return "StarlarkRustBackend{slot-based interpreter following facebook/starlark-rust model}";
     }
   }
 }

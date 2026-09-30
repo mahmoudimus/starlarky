@@ -20,6 +20,8 @@ package net.starlark.java.eval.compiler;
  * <p>The Starlark bytecode compiler can generate code for multiple backends:
  * <ul>
  *   <li><b>INTERPRETER</b>: Execute via the built-in bytecode interpreter
+ *   <li><b>STARLARK_GO</b>: Execute via starlark-go style stack-based interpreter
+ *   <li><b>STARLARK_RUST</b>: Execute via starlark-rust style slot-based interpreter
  *   <li><b>JVM</b>: Generate JVM .class files for native Java execution
  *   <li><b>WASM</b>: Generate WebAssembly text format (WAT) for browser/WASM runtime execution
  * </ul>
@@ -30,9 +32,40 @@ public enum BytecodeTarget {
    * Execute bytecode using the built-in stack-based interpreter.
    *
    * <p>This is the default and most portable option. The bytecode is executed
-   * directly by {@link BytecodeInterpreter} without any additional compilation step.
+   * directly by {@link net.starlark.java.eval.BytecodeInterpreter} without any
+   * additional compilation step.
    */
   INTERPRETER("interpreter", "stc", "Starlark Bytecode Interpreter"),
+
+  /**
+   * Execute bytecode using the starlark-go style interpreter.
+   *
+   * <p>This follows the google/starlark-go execution model:
+   * <ul>
+   *   <li>Stack-based virtual machine with separate operand stack
+   *   <li>Local variables stored in a separate array
+   *   <li>Simple switch-based opcode dispatch
+   *   <li>Delta-encoded position tracking for debugging
+   * </ul>
+   *
+   * @see StarlarkGoInterpreter
+   */
+  STARLARK_GO("starlark-go", "stc", "Starlark-Go Style Interpreter"),
+
+  /**
+   * Execute bytecode using the starlark-rust style interpreter.
+   *
+   * <p>This follows the facebook/starlark-rust execution model:
+   * <ul>
+   *   <li>Slot-based memory model: unified array for locals AND stack
+   *   <li>Fixed frame size computed at compile time
+   *   <li>Type-safe instruction dispatch via handler pattern
+   *   <li>Optimized for cache-friendly sequential memory access
+   * </ul>
+   *
+   * @see StarlarkRustInterpreter
+   */
+  STARLARK_RUST("starlark-rust", "stc", "Starlark-Rust Style Interpreter"),
 
   /**
    * Compile to JVM bytecode (.class files).

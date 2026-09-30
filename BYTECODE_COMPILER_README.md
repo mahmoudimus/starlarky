@@ -355,8 +355,56 @@ The bytecode compiler supports multiple compilation targets through a pluggable 
 | Target | File Extension | Description |
 |--------|---------------|-------------|
 | `INTERPRETER` | `.stc` | Default bytecode interpreter execution |
+| `STARLARK_GO` | `.stc` | starlark-go style stack-based interpreter |
+| `STARLARK_RUST` | `.stc` | starlark-rust style slot-based interpreter |
 | `JVM` | `.class` | Native JVM class files |
 | `WASM` | `.wat` | WebAssembly text format |
+
+### Interpreter Backend Comparison
+
+| Backend | Model | Memory Layout | Best For |
+|---------|-------|---------------|----------|
+| `INTERPRETER` | Stack-based | Separate stack + locals | Default, most tested |
+| `STARLARK_GO` | Stack-based | Separate stack + locals | google/starlark-go compatibility |
+| `STARLARK_RUST` | Slot-based | Unified slots array | Cache locality, performance |
+
+#### starlark-go Style (Stack-Based)
+
+Follows the [google/starlark-go](https://github.com/google/starlark-go) execution model:
+- Stack-based virtual machine with separate operand stack
+- Local variables stored in a separate array
+- Simple switch-based opcode dispatch
+- Delta-encoded position tracking for debugging
+
+```java
+// Execute with starlark-go style interpreter
+Object result = StarlarkGoInterpreter.execute(chunk, thread, globals);
+
+// Or via unified executor
+Object result = BytecodeExecutor.execute(chunk, thread, globals, BytecodeTarget.STARLARK_GO);
+```
+
+#### starlark-rust Style (Slot-Based)
+
+Follows the [facebook/starlark-rust](https://github.com/facebook/starlark-rust) execution model:
+- Slot-based memory model: unified array for locals AND stack
+- Fixed frame size computed at compile time
+- Optimized for cache-friendly sequential memory access
+
+Memory layout:
+```
+┌──────────────────────────────────────────────────────┐
+│ Local Variables (0..n-1) │ Stack (n..max_stack) │
+└──────────────────────────────────────────────────────┘
+```
+
+```java
+// Execute with starlark-rust style interpreter
+Object result = StarlarkRustInterpreter.execute(chunk, thread, globals);
+
+// Or via unified executor
+Object result = BytecodeExecutor.execute(chunk, thread, globals, BytecodeTarget.STARLARK_RUST);
+```
 
 ### Using the Backend API
 
@@ -500,13 +548,17 @@ The stack trace shows:
 ```
 libstarlark/src/main/java/net/starlark/java/
 ├── eval/
+│   ├── BytecodeInterpreter.java        # Default bytecode executor
+│   ├── BytecodeFunction.java           # Bytecode function wrapper
 │   └── compiler/
 │       ├── Opcode.java                 # Bytecode instruction set
 │       ├── Instruction.java            # Single instruction
 │       ├── ConstantPool.java           # Constant storage
 │       ├── BytecodeChunk.java          # Bytecode container
 │       ├── BytecodeCompiler.java       # AST → Bytecode
-│       ├── BytecodeInterpreter.java    # Bytecode executor
+│       ├── StarlarkGoInterpreter.java  # starlark-go style executor
+│       ├── StarlarkRustInterpreter.java # starlark-rust style executor
+│       ├── BytecodeExecutor.java       # Unified execution interface
 │       ├── WasmGenerator.java          # Bytecode → WASM
 │       ├── BytecodeSerializer.java     # Serialization
 │       ├── JvmBytecodeGenerator.java   # Bytecode → JVM .class
