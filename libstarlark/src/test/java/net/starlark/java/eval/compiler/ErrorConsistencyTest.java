@@ -498,7 +498,8 @@ public class ErrorConsistencyTest {
     try {
       StarlarkFile file = parse(source);
       Module module = Module.create();
-      Program program = Program.compileFile(file, module);
+      // Force bytecode compilation for this test
+      Program program = Program.compileFile(file, module, /*enableBytecode=*/ true);
 
       if (!program.hasBytecode()) {
         return new ErrorInfo("No bytecode generated", null, false);

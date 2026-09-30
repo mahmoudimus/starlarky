@@ -204,6 +204,11 @@ public final class BytecodeFunction implements UserDefinedFunction {
   @Override
   public Object fastcall(StarlarkThread thread, Object[] positional, Object[] named)
       throws EvalException, InterruptedException {
+    // Check for disallowed recursion
+    if (!thread.isRecursionAllowed() && thread.isRecursiveCall(this)) {
+      throw Starlark.errorf("function '%s' called recursively", getName());
+    }
+
     // Compute the effective parameter values
     Object[] locals = processArgs(thread.mutability(), positional, named);
 
