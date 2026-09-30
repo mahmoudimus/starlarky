@@ -566,6 +566,29 @@ public final class BytecodeInterpreter {
           }
           break;
 
+        case LIST_APPEND:
+          {
+            // LIST_APPEND(i) pops value from top of stack and appends it to list at stack[-i]
+            int offset = instr.getOperand1();
+            Object value = pop();
+            @SuppressWarnings("unchecked")
+            StarlarkList<Object> list = (StarlarkList<Object>) stackGet(offset);
+            list.addElement(value);
+          }
+          break;
+
+        case DICT_ADD:
+          {
+            // DICT_ADD(i) pops value and key from stack, adds to dict at stack[-i]
+            int offset = instr.getOperand1();
+            Object value = pop();
+            Object key = pop();
+            @SuppressWarnings("unchecked")
+            Dict<Object, Object> dict = (Dict<Object, Object>) stackGet(offset);
+            dict.putEntry(key, value);
+          }
+          break;
+
         case NOP:
           // No operation
           break;
@@ -631,6 +654,15 @@ public final class BytecodeInterpreter {
       throw error("stack underflow");
     }
     return stack.get(stack.size() - 1);
+  }
+
+  // Get value at stack[-offset] (offset 1 = top, 2 = second from top, etc.)
+  private Object stackGet(int offset) throws EvalException {
+    int index = stack.size() - offset;
+    if (index < 0 || index >= stack.size()) {
+      throw error("stack index out of range: " + offset);
+    }
+    return stack.get(index);
   }
 
   private void binaryOp(BinaryOperation op) throws EvalException, InterruptedException {
