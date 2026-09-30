@@ -443,6 +443,144 @@ public class BytecodeCompilerTest {
     System.out.println("\nBoth targets generated successfully from same Starlark bytecode!");
   }
 
+  // ==================== Multi-Backend Compilation Tests ====================
+
+  @Test
+  public void testBytecodeTargetEnum() {
+    // Test target enumeration
+    assertEquals(3, BytecodeTarget.values().length);
+
+    // Test fromId
+    assertEquals(BytecodeTarget.JVM, BytecodeTarget.fromId("jvm"));
+    assertEquals(BytecodeTarget.WASM, BytecodeTarget.fromId("wasm"));
+    assertEquals(BytecodeTarget.INTERPRETER, BytecodeTarget.fromId("interpreter"));
+    assertNull(BytecodeTarget.fromId("unknown"));
+
+    // Test file extensions
+    assertEquals("class", BytecodeTarget.JVM.getFileExtension());
+    assertEquals("wat", BytecodeTarget.WASM.getFileExtension());
+    assertEquals("stc", BytecodeTarget.INTERPRETER.getFileExtension());
+
+    // Test default
+    assertEquals(BytecodeTarget.INTERPRETER, BytecodeTarget.getDefault());
+
+    System.out.println("=== BytecodeTarget Enum Test ===");
+    for (BytecodeTarget target : BytecodeTarget.values()) {
+      System.out.println(target.getDisplayName() + " (" + target.getId() + ") -> ." + target.getFileExtension());
+    }
+  }
+
+  @Test
+  public void testBytecodeBackendInterface() throws Exception {
+    String source = "x = 42\n";
+    BytecodeChunk chunk = compileSource(source);
+
+    // Test all backends
+    for (BytecodeTarget target : BytecodeTarget.values()) {
+      BytecodeBackend backend = BytecodeBackend.forTarget(target);
+      assertEquals(target, backend.getTarget());
+
+      byte[] output = backend.generate(chunk, "com/test/Backend" + target.name(), "test.star");
+      assertNotNull(output);
+      assertTrue(output.length > 0);
+
+      System.out.println("Backend " + target + " generated " + output.length + " bytes");
+
+      if (backend.isTextOutput()) {
+        String text = backend.generateText(chunk, "test_module");
+        assertNotNull(text);
+        assertTrue(text.length() > 0);
+      }
+    }
+
+    System.out.println("=== BytecodeBackend Interface Test Passed ===");
+  }
+
+  @Test
+  public void testMultiTargetCompiler() throws Exception {
+    String source = "def add(a, b):\n  return a + b\n\nresult = add(1, 2)\n";
+
+    // Build multi-target compiler
+    MultiTargetCompiler compiler = new MultiTargetCompiler.Builder()
+        .addTarget(BytecodeTarget.INTERPRETER)
+        .addTarget(BytecodeTarget.JVM)
+        .addTarget(BytecodeTarget.WASM)
+        .setSourceFile("add.star")
+        .setClassName("com/example/Add")
+        .build();
+
+    // Compile to all targets
+    MultiTargetCompiler.CompilationResult result = compiler.compile(source);
+
+    // Verify bytecode
+    assertNotNull(result.getBytecode());
+
+    // Verify all outputs
+    assertTrue(result.hasOutput(BytecodeTarget.INTERPRETER));
+    assertTrue(result.hasOutput(BytecodeTarget.JVM));
+    assertTrue(result.hasOutput(BytecodeTarget.WASM));
+
+    byte[] interpreterBytes = result.getOutput(BytecodeTarget.INTERPRETER);
+    byte[] jvmBytes = result.getOutput(BytecodeTarget.JVM);
+    byte[] wasmBytes = result.getOutput(BytecodeTarget.WASM);
+    String watText = result.getTextOutput(BytecodeTarget.WASM);
+
+    assertNotNull(interpreterBytes);
+    assertNotNull(jvmBytes);
+    assertNotNull(wasmBytes);
+    assertNotNull(watText);
+
+    System.out.println("=== MultiTargetCompiler Test ===");
+    System.out.println("Interpreter bytecode: " + interpreterBytes.length + " bytes");
+    System.out.println("JVM bytecode: " + jvmBytes.length + " bytes");
+    System.out.println("WASM (WAT): " + wasmBytes.length + " bytes");
+    System.out.println("All three backends generated successfully!");
+  }
+
+  @Test
+  public void testMultiTargetCompilerAllTargets() throws Exception {
+    String source = "numbers = [1, 2, 3]\ntotal = 0\nfor n in numbers:\n  total = total + n\n";
+
+    // Use allTargets() convenience method
+    MultiTargetCompiler compiler = new MultiTargetCompiler.Builder()
+        .allTargets()
+        .setSourceFile("loop.star")
+        .build();
+
+    assertEquals(3, compiler.getTargets().size());
+
+    MultiTargetCompiler.CompilationResult result = compiler.compile(source);
+
+    // Verify all outputs exist
+    assertEquals(3, result.getAllOutputs().size());
+
+    System.out.println("=== MultiTargetCompiler All Targets Test ===");
+    for (BytecodeTarget target : BytecodeTarget.values()) {
+      byte[] output = result.getOutput(target);
+      System.out.println(target.getDisplayName() + ": " + output.length + " bytes");
+    }
+  }
+
+  @Test
+  public void testMultiTargetCompilerSingleTarget() throws Exception {
+    String source = "x = 'hello'\n";
+
+    // Single target
+    MultiTargetCompiler compiler = new MultiTargetCompiler.Builder()
+        .addTarget(BytecodeTarget.JVM)
+        .build();
+
+    assertEquals(1, compiler.getTargets().size());
+
+    MultiTargetCompiler.CompilationResult result = compiler.compile(source);
+
+    assertTrue(result.hasOutput(BytecodeTarget.JVM));
+    assertFalse(result.hasOutput(BytecodeTarget.WASM));
+
+    System.out.println("=== Single Target Compilation Test ===");
+    System.out.println("JVM only: " + result.getOutput(BytecodeTarget.JVM).length + " bytes");
+  }
+
   // Helper methods
 
   private BytecodeChunk compileSource(String source) throws SyntaxError.Exception {
