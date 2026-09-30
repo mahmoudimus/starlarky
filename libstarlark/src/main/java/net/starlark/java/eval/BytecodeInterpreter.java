@@ -181,10 +181,8 @@ public final class BytecodeInterpreter {
 
     try {
       while (ip < instructions.size()) {
-        // Check for interrupts
-        if (Thread.interrupted()) {
-          throw new InterruptedException();
-        }
+        // Check for thread interruption and execution limits
+        thread.checkInterrupt();
 
         Instruction instr = instructions.get(ip);
         Opcode opcode = instr.getOpcode();
@@ -391,10 +389,17 @@ public final class BytecodeInterpreter {
               pairs[i * 2] = pop();     // key
             }
 
-            // Build dict in correct order
+            // Build dict in correct order, checking for duplicates
             Dict<Object, Object> dict = Dict.of(thread.mutability());
             for (int i = 0; i < count; i++) {
-              dict.putEntry(pairs[i * 2], pairs[i * 2 + 1]);
+              Object key = pairs[i * 2];
+              Object value = pairs[i * 2 + 1];
+              int before = dict.size();
+              dict.putEntry(key, value);
+              if (dict.size() == before) {
+                throw Starlark.errorf(
+                    "dictionary expression has duplicate key: %s", Starlark.repr(key));
+              }
             }
             push(dict);
           }
