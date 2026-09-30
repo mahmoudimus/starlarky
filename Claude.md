@@ -1,447 +1,73 @@
-# Starlark Bytecode Compiler Implementation Progress
+# CLAUDE.md
 
-## Project Overview
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Implementing a bytecode compilation and execution system for Starlark as an alternative to the tree-walking interpreter. The goal is 100% feature parity with all 60 EvaluationTest tests passing.
+## What this is
 
-**Branch:** `claude/multi-backend-compilation-015oF9gXw953BieDzsJgaAoC`
+Starlarky is VGS's fork of Bazel's Java Starlark interpreter, used to run untrusted user-submitted scripts. Maven multi-module repo (Java 17):
 
-**Current Status:** 60/60 tests passing (100%) 🎉 COMPLETE! ⬆️ +1 from **kwargs support!
+- `libstarlark/` — the Starlark lexer/parser/resolver/evaluator (`net.starlark.java.*`), periodically synced from bazelbuild via `bin/update-starlark.py`. Avoid gratuitous divergence from upstream outside the bytecode work below.
+- `larky/` — VGS additions (`com.verygood.security.larky.*`): JSR223 engine, Python-compat object model (`objects/`, `modules/types/`), native Java modules (`modules/`), and a Starlark stdlib written in `.star` (`src/main/resources/stdlib`, `vendor`, `vgs`).
+- `runlarky/` — Quarkus/GraalVM native CLI (`larky-runner`). Adding or moving a native module in `larky/modules` requires updating `runlarky/src/main/resources/reflect-config.json`.
+- `larky-api/`, `pylarky/` — Java API and pip wrapper around the runner (not in the root reactor).
 
-## Architecture
+## Commands
 
-```
-AST (syntax tree)
-  ↓
-BytecodeCompiler (compiles statements/expressions)
-  ↓
-BytecodeChunk (contains instructions + constant pool)
-  ↓
-BytecodeInterpreter (stack-based VM executor)
-```
-
-### Key Components
-
-1. **BytecodeCompiler** - Translates AST nodes to bytecode instructions
-2. **BytecodeChunk** - Container for bytecode (instructions, constants, metadata)
-3. **BytecodeInterpreter** - Executes bytecode using a stack-based VM
-4. **Opcode** - Enum of all bytecode instructions
-5. **Instruction** - Individual bytecode instruction (opcode + operands)
-6. **BytecodeFunction** - Represents compiled function objects
-
-## Completed Work
-
-### 1. Basic Bytecode Infrastructure ✅
-- Opcode definitions for all basic operations
-- Instruction format: 1-byte opcode + 4-byte operands
-- Constant pool for literals
-- Stack-based execution engine
-
-### 2. Control Flow ✅
-- IF/ELSE statements with conditional jumps
-- FOR loops with iterator protocol
-- RETURN statements
-- BREAK/CONTINUE (basic support)
-
-### 3. Tuple Destructuring ✅
-```python
-a, b, c = [1, 2, 3]  # Works correctly
-```
-- Implemented UNPACK_SEQUENCE opcode
-- Proper validation of sequence length
-- Correct element ordering
-
-### 4. List/Dict Comprehensions ✅
-```python
-y = [x + 1 for x in [1, 2, 3]]  # Now works!
-```
-- Recursive clause compilation
-- Stack depth tracking for nested comprehensions
-- LIST_APPEND and DICT_ADD opcodes
-
-### 5. Jump Patching (CRITICAL FIX) ✅
-**Bugs Fixed:**
-- `markLabel()` was storing byte offsets instead of instruction indices
-- `updateInstructionOperand()` had wrong parameter order
-- Redundant POP after FOR_ITER loops
-
-**Impact:** Increased passing tests from 36/60 → 39/60
-
-### 6. Globals Persistence ✅
-- Bytecode-modified globals written back to Module
-- Proper handling of predeclared bindings vs user-defined globals
-
-### 7. Thread Interruption (Partial) ⚠️
-- `thread.checkInterrupt()` called during execution
-- Some interrupt tests still failing (see below)
-
-### 8. Duplicate Key Detection ✅
-- Runtime validation in BUILD_DICT
-- Correct error messages for duplicate dictionary keys
-
-## Test Results
-
-### Passing: 43/60 (72%)
-
-All basic functionality works:
-- Arithmetic operations
-- Variable assignments
-- Function definitions and calls (with proper local variables)
-- Basic loops and conditionals
-- Tuple/list/dict construction
-- Comprehensions (list and dict)
-- String operations
-- Boolean logic
-- **Thread interruption** ✅ NEW!
-
-### Failing: 17/60 (28%)
-
-#### Category 1: Interrupt Handling (4 tests) ✅ **FIXED!**
-All 4 interrupt tests now pass:
-- `testExecutionNotStartedOnInterrupt` ✅
-- `testForComprehensionAbortedOnInterrupt` ✅
-- `testForLoopAbortedOnInterrupt` ✅
-- `testFunctionCallsNotStartedOnInterrupt` ✅
-
-**Fixes Applied:**
-1. Function local variables - Set localCount from `Resolver.Function.getLocals().size()`
-2. Jump patching for functions - Call `patchJumps()` before building function chunk
-3. InterruptedException propagation - Added catch block to re-throw without wrapping
-
----
-
-#### Category 2: Mutation Tracking (4 tests)
-- `testDictComprehensionUpdate`
-- `testListComprehensionUpdate`
-- `testListComprehensionUpdateInClause`
-- `testNestedListComprehensionUpdate`
-
-**Issue:** No error when mutating collection during for-loop iteration
-
-**Example:**
-```python
-x = [1, 2, 3]
-for i in x:
-    x.append(4)  # Should error: "list value is temporarily immutable"
-```
-
-**Root Cause:** Not calling `EvalUtils.addIterator()` / `removeIterator()`
-
-**Fix Required:**
-1. Call `EvalUtils.addIterator(iterable)` in GET_ITER
-2. Call `EvalUtils.removeIterator(iterable)` when FOR_ITER exhausts
-3. These methods lock collections during iteration
-
----
-
-#### Category 3: Type Checking (3 tests)
-- `testConcatLists`
-- `testListConcatenation`
-- `testAccessDictWithATupleKey`
-
-**Issue:** Missing runtime type validation
-
-**Examples:**
-```python
-[1] + (2,)  # Should error: "unsupported binary operation: list + tuple"
-{'key': [1, 2]}  # Should error if key contains unhashable list
-```
-
-**Root Cause:** Bytecode ADD opcode doesn't validate operand types
-
-**Fix Required:**
-1. In ADD/MULTIPLY/etc: check types match expected combinations
-2. In BUILD_DICT: validate keys are hashable
-3. Use `Starlark.type()` to get type names for error messages
-
----
-
-#### Category 4: Comprehension Validation (3 tests)
-- `testDictComprehensionOnNonIterable`
-- `testListComprehensionFailsOnNonSequence`
-- `testListComprehensionOnStringIsForbidden`
-
-**Issue:** Missing validation that comprehension sources are iterable/sequences
-
-**Examples:**
-```python
-[x for x in 5]  # Should error: "type 'int' is not iterable"
-[x for x in "abc"]  # Should error: strings forbidden in comprehensions
-```
-
-**Root Cause:** GET_ITER doesn't validate the object is iterable
-
-**Fix Required:**
-1. In GET_ITER: check `Starlark.isIterable()` before creating iterator
-2. Add special check to forbid string iteration in comprehensions
-3. Provide clear error messages with type information
-
----
-
-#### Category 5: Execution Limits (2 tests)
-- `testExecutionSteps`
-- `testExpiration`
-
-**Issue:** No execution step counting or time limits
-
-**Root Cause:** Not integrating with `StarlarkThread` step counter
-
-**Fix Required:**
-1. In BytecodeInterpreter main loop: call `thread.steps++`
-2. Check `thread.isExpired()` periodically
-3. Throw appropriate exception when limits exceeded
-
----
-
-#### Category 6: Error Messages (2 tests)
-- `testListComprehensionDefinitionOrder`
-- `testDictKeysDuplicateKeyArgs`
-
-**Issue:** Error messages don't match tree-walking interpreter
-
-**Examples:**
-- Expected: "local variable 'y' is referenced before assignment"
-- Got: "local variable not initialized"
-
-**Fix Required:** Update error messages to match exactly
-
----
-
-#### Category 7: Load Statement (1 test)
-- `testLoadsBindLocally`
-
-**Issue:** LOAD statement not implemented
-
-**Fix Required:**
-1. Implement LOAD_MODULE opcode
-2. Handle module loading and binding
-3. This is a larger feature - may defer
-
----
-
-#### Category 8: Module Rebinding (1 test)
-- `testTopLevelRebinding`
-
-**Issue:** Internal error during bytecode execution
-
-**Fix Required:** Debug this specific test case (likely globals-related)
-
----
-
-#### Category 9: Format Strings (1 test)
-- `testExec`
-
-**Issue:** Format string handling incorrect
-
-**Error:** "not enough arguments for format pattern '%s%d': (['foo', 1],)"
-
-**Fix Required:** Debug format string implementation in bytecode
-
----
-
-## Key Files
-
-### Compilation
-- `/home/user/starlarky/libstarlark/src/main/java/net/starlark/java/eval/compiler/BytecodeCompiler.java`
-  - Main compiler: AST → bytecode
-  - Jump patching logic
-  - Comprehension compilation
-
-- `/home/user/starlarky/libstarlark/src/main/java/net/starlark/java/eval/compiler/BytecodeChunk.java`
-  - Bytecode container
-  - Instruction storage
-  - `updateInstructionOperand()` for jump patching
-
-- `/home/user/starlarky/libstarlark/src/main/java/net/starlark/java/eval/compiler/Opcode.java`
-  - All bytecode instruction definitions
-  - Operand counts
-
-### Execution
-- `/home/user/starlarky/libstarlark/src/main/java/net/starlark/java/eval/BytecodeInterpreter.java`
-  - Stack-based VM
-  - Main execution loop (line ~200-650)
-  - Opcode handlers
-
-- `/home/user/starlarky/libstarlark/src/main/java/net/starlark/java/eval/BytecodeFunction.java`
-  - Compiled function objects
-  - Argument validation
-  - Closure support (partial)
-
-### Integration
-- `/home/user/starlarky/libstarlark/src/main/java/net/starlark/java/eval/Starlark.java`
-  - `execFileProgram()` - chooses bytecode vs tree-walker
-  - Globals write-back mechanism
-  - Entry point integration
-
-- `/home/user/starlarky/libstarlark/src/main/java/net/starlark/java/syntax/Program.java`
-  - Compilation trigger
-  - Controlled by `starlark.bytecode` system property
-
-### Tests
-- `/home/user/starlarky/libstarlark/src/test/java/net/starlark/java/eval/EvaluationTest.java`
-  - Main test suite (60 tests)
-  - Run with: `mvn test -Dtest=EvaluationTest -Dstarlark.bytecode=true`
-
-## Running Tests
-
-### Enable Bytecode Mode
 ```bash
-mvn test -Dtest=EvaluationTest -Dstarlark.bytecode=true
+mvn clean install -DskipTests                      # build everything; larky depends on libstarlark 1.0.0-SNAPSHOT from ~/.m2
+mvn test -pl libstarlark                           # libstarlark tests (tree-walker)
+mvn test -pl libstarlark -Dstarlark.bytecode=true -Dstarlark.bytecode.strict=true  # same suite on the bytecode VM, failing instead of falling back
+mvn test -pl libstarlark,larky -Dstarlark.bytecode=true -Dstarlark.bytecode.strict=true -Dstarlark.bytecode.vm=starlark-go  # pick the VM: interpreter (default), starlark-go, starlark-rust, buck
+mvn test -pl libstarlark -Dtest=EvaluationTest#testExec -Dstarlark.bytecode=true   # single test
+mvn test -pl larky -Dtest=StdLibTests -Dlarky.stdlib_test=test_bytes.star           # one larky stdlib .star test
 ```
 
-### Debug Bytecode Output
-```bash
-mvn test -Dtest=EvaluationTest -Dstarlark.bytecode=true -Ddebug.bytecode=true
-```
+- After changing `libstarlark`, run `mvn install -pl libstarlark -DskipTests` before testing `larky`, or use `-pl larky -am`.
+- Surefire reports: `<module>/target/surefire-reports/*.txt`. Check file timestamps; a failed Maven run (e.g. `-o` plugin-resolution failure) leaves the previous run's report in place.
+- Some interrupt tests can leave Maven hanging after tests finish; wrap long runs in `timeout`.
+- Debug flags (system properties): `-Ddebug.bytecode=true` (dump chunks + trace each instruction), `-Ddebug.globals=true`.
+- `.star` test locations: libstarlark `src/test/java/net/starlark/java/eval/testdata/` — each file is a JUnit case of `ScriptFilesTest` (runs `ScriptTest.runFile` on a thread with a 512k stack; `json.star`'s nesting-depth cases depend on hitting `StackOverflowError`). larky `src/test/resources/{stdlib_tests,vendor_tests,vgs_tests,quick_tests}` (run by `StdLibTests`, `VendorLibTests`, `VGSLibTests`, `LarkyQuickTests`).
+- CI parity: `docker-compose run local bash /src/build-and-test-java.sh`.
 
-### Run Specific Test
-```bash
-mvn test -Dtest=EvaluationTest#testListComprehensionAtTopLevel -Dstarlark.bytecode=true
-```
+## Bytecode execution path (libstarlark)
 
-### View Test Results
-```bash
-cat /home/user/starlarky/libstarlark/target/surefire-reports/net.starlark.java.eval.EvaluationTest.txt
-```
+An alternative to the tree-walking `Eval`, enabled only when `-Dstarlark.bytecode=true`:
 
-## Next Steps (Priority Order)
+1. `syntax/Program` constructor reads the property and calls `BytecodeCompiler.compileFunction(body)`. On compile failure it prints a warning and **silently falls back** to the tree-walker unless `-Dstarlark.bytecode.strict=true` is set — always use strict when testing bytecode. `Program.compileFile(file, env, enableBytecode)` forces compilation explicitly.
+2. `Starlark.execFileProgram()` runs `BytecodeInterpreter.execute(...)` when `prog.hasBytecode()`, then writes globals back into the `Module`. The VM's namespace (`BytecodeGlobals`) is a live view of the `Module`'s globals (functions see later assignments, e.g. from another file run in the same module, as in a REPL); PREDECLARED/UNIVERSAL names are read with `LOAD_BUILTIN`, so file-level bindings shadow builtins as in the tree-walker. Top-level frames are `BytecodeToplevel`, which, like `BytecodeFunction`, reports its module to `Module.ofInnermostEnclosingStarlarkFunction`.
+3. `eval/compiler/`: `BytecodeCompiler` (AST → `BytecodeChunk`: instructions + `ConstantPool` + locals/line/column metadata), `Opcode`, `Instruction`. `def` bodies compile to nested chunks wrapped at runtime as `BytecodeFunction` (must report `type()` as `"function"` and participate in recursion detection like `StarlarkFunction`).
+4. VMs: all opcode semantics live in `AbstractBytecodeVM`. `BytecodeInterpreter` (default), `StarlarkGoInterpreter`, `StarlarkRustInterpreter` and `BuckStyleInterpreter` are subclasses that only choose storage (`push`/`pop`/`getLocal`...: separate stack list, unified growable slot array, ...) and optional hooks (`binaryOp` specialization, `getAttr` caching, stats). Fix semantics in the base class, never in a subclass. `-Dstarlark.bytecode.vm` (read once by `BytecodeTarget.configuredVm()`) selects the VM for top-level code and function bodies via `BytecodeVms`. `JVM`/`WASM` targets go through `BytecodeBackend` (`JvmBytecodeGenerator` + `StarlarkRuntime` helpers, `WasmGenerator`) and are not execution VMs.
 
-### 1. Fix Interrupt Handling (Quick Win - 4 tests)
-**File:** `BytecodeInterpreter.java`
-**Change:** Don't wrap InterruptedException in EvalException
-```java
-// Current:
-catch (InterruptedException e) {
-  throw new EvalException("interrupted", e);
-}
+Invariants that have caused bugs:
+- `Instruction.create(Opcode, int operand, int offset)` — operand before offset.
+- Labels/jump targets are **instruction indices**, not byte offsets; nested functions must `patchJumps()` before their chunk is built; labels must be unique across nested if/else.
+- `FOR_ITER` pops the iterator itself on exhaustion — no extra `POP` after a loop. Iteration must call `EvalUtils.addIterator/removeIterator` so mutation-during-iteration errors fire.
+- Comprehensions: each `for` clause adds one iterator to the stack; `LIST_APPEND`/`DICT_ADD` depth operands must account for it.
+- `InterruptedException` must propagate unwrapped; the main loop must count steps / honor `thread` interrupt and expiry. Other runtime exceptions propagate too (no catch-all); top-level ones are wrapped as `UncheckedEvalException`, as `Starlark.fastcall` does.
+- Calls pass `positional[]`/`named[]` arrays to `Starlark.fastcall` in source order (positional < keyword < `*` < `**`); duplicate/unexpected-keyword errors come from the callee.
+- Each error-raising instruction is emitted with the tree-walker's error location (`emitAt(loc, ...)`: operator, dot, lbracket, `=`, for-clause start). Iteration locks are released in `run()`'s `finally` for loops exited by `return`/exception.
+- `ConstantPool` dedups by class + value (floats by bits): `1 == 1.0` in Starlark, but they must stay distinct constants.
+- Error text and locations must match the tree-walker exactly (`EvalException.withLocation`); `ErrorConsistencyTest` and `EvaluationTest` compare them.
 
-// Should be:
-catch (InterruptedException e) {
-  throw e;  // Let it propagate
-}
-```
+## Larky layer
 
-### 2. Implement Mutation Tracking (Medium - 4 tests)
-**File:** `BytecodeInterpreter.java`
-**Changes:**
-- GET_ITER: `EvalUtils.addIterator(iterable)`
-- FOR_ITER (when exhausted): `EvalUtils.removeIterator(iterable)`
+- `ModuleSupplier` defines what scripts can see: `CORE_MODULES`/`CORE_ENVIRONMENT` (globals such as `LarkyGlobals`, Python builtins, `classmethod`), `STD_MODULES`, `VGS_MODULES`, `TEST_MODULES`. Native modules are `@StarlarkBuiltin`-annotated classes; `.star` stdlib modules wrap them (e.g. `stdlib/re.star` over `RegexModule`).
+- `LarkySemantics` holds Larky-specific `StarlarkSemantics` flags.
+- Code that special-cases user functions must test `UserDefinedFunction` (implemented by both `StarlarkFunction` and `BytecodeFunction`), not `StarlarkFunction` — e.g. `LarkyProvidedTypeClass` wraps class members as `LarkyFunction` descriptors to bind `self`.
+- JSR223 (`jsr223/LarkyCompiledScript`): `compile()` resolves leniently (bindings arrive at eval) and produces bytecode artifacts; `eval()` goes through the Larky interpreter except in JVM mode. Never open `context.getReader()` unless there is no compiled source — the default reader wraps `System.in`, and closing it kills the surefire fork.
 
-### 3. Add Type Validation (Medium - 3 tests)
-**File:** `BytecodeInterpreter.java`
-**Changes:**
-- ADD/MULTIPLY: Check operand type compatibility
-- BUILD_DICT: Validate keys are hashable
-- Use `Starlark.type()` for error messages
+## Rules (from `.cursorrules`)
 
-### 4. Add Comprehension Validation (Medium - 3 tests)
-**File:** `BytecodeInterpreter.java`
-**Changes:**
-- GET_ITER: Check `Starlark.isIterable()`
-- Special handling to forbid string iteration in comprehensions
+- Scripts are untrusted: no file/OS/process/network access, reflection, dynamic class loading, or JNI escape hatches from builtins; no unseeded randomness or wall-clock/timezone access; don't leak Java stack traces in Starlark errors.
+- Keep Starlark semantics (not Python): respect freezing/mutability, don't add Python-only features. Return Starlark values from builtins and validate arguments strictly.
+- Error message form: ``fn(arg=…) expected `<type>`; got <type>``.
 
-### 5. Implement Execution Limits (Easy - 2 tests)
-**File:** `BytecodeInterpreter.java`
-**Changes:**
-- Main loop: `thread.steps++`
-- Check `thread.isExpired()` periodically
+## graphify
 
-### 6. Fix Error Messages (Easy - 2 tests)
-**Files:** Various
-**Changes:** Update error strings to match tree-walker
+This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
 
-### 7. Debug Remaining (Hard - 3 tests)
-- testExec (format strings)
-- testTopLevelRebinding (globals)
-- testLoadsBindLocally (LOAD_MODULE - may defer)
-
-## Important Notes
-
-### Instruction.create() Parameter Order
-**CRITICAL:** The signature is `create(Opcode opcode, int operand, int offset)`
-- operand comes BEFORE offset
-- This was a source of bugs in jump patching
-
-### FOR_ITER Behavior
-FOR_ITER already pops the iterator when jumping to break label:
-```java
-if (!iterator.hasNext()) {
-  pop();  // Iterator is removed here
-  ip = jumpTarget - 1;
-}
-```
-Don't add extra POP after the loop!
-
-### Stack Depth in Comprehensions
-When compiling nested comprehensions, track stack depth carefully:
-- Each for clause adds +1 to stack depth (the iterator)
-- LIST_APPEND/DICT_ADD operands must account for this
-- Formula: `stackDepth + 2` for LIST_APPEND (result + iterator + value)
-
-### Debug Logging
-Enable with `-Ddebug.bytecode=true`:
-- Prints full bytecode chunk before execution
-- Prints each instruction as it executes with stack depth
-- Prints label marking and jump patching
-
-### Maven Hanging
-Some interrupt tests cause Maven to hang after completion. The tests DO complete (check surefire-reports), but the process doesn't exit. Use `timeout` or `pkill` if needed.
-
-## Recent Commits
-
-1. **24333cb** - Implement tuple/list destructuring for bytecode execution
-2. **00c245c** - Implement list and dict comprehension compilation (partial)
-3. **64f34d5** - Fix comprehension stack depth tracking and implement jump patching
-4. **85ed46a** - Add critical fixes: globals persistence, thread interruption, duplicate key detection
-5. **c4da1a7** - Fix jump patching in bytecode compiler - now 39/60 tests pass
-6. **1f5c3f3** - Add progress snapshot documentation (Claude.md)
-7. **e80759d** - Fix function local variables and interrupt handling - now 43/60 tests pass ⭐ **(latest)**
-
-## How to Resume Work
-
-1. **Checkout the branch:**
-   ```bash
-   git checkout claude/multi-backend-compilation-015oF9gXw953BieDzsJgaAoC
-   ```
-
-2. **Run tests to confirm baseline:**
-   ```bash
-   mvn test -Dtest=EvaluationTest -Dstarlark.bytecode=true
-   ```
-   Should show: `Tests: 60, Failures: 14, Errors: 7` (39 passing)
-
-3. **Pick a category from "Next Steps" above**
-   Start with interrupt handling for quick wins
-
-4. **Make changes and test:**
-   ```bash
-   mvn clean compile
-   mvn test -Dtest=EvaluationTest#testForLoopAbortedOnInterrupt -Dstarlark.bytecode=true
-   ```
-
-5. **Commit incrementally:**
-   ```bash
-   git add -A
-   git commit -m "Fix interrupt handling - now 43/60 tests pass"
-   git push -u origin claude/multi-backend-compilation-015oF9gXw953BieDzsJgaAoC
-   ```
-
-## Reference: Facebook Buck Implementation
-
-User emphasized studying Facebook's Buck implementation:
-https://github.com/jasonnam/buck/tree/ad735af4d06040e78c85427fb6baeae90b64632b/starlark/src/main/java/net/starlark/java/eval
-
-Key differences:
-- Buck may use register-based VM vs our stack-based
-- Buck may have IR layer
-- Study their approach to comprehensions, scoping, and iteration
-
-## Goal
-
-**Target:** 60/60 tests passing (100%)
-**Current:** 60/60 tests passing (100%) ✅ **ACHIEVED!**
-**Remaining:** 0 tests
-
-### 🎉 All Tests Passing!
-
-The bytecode compilation and execution system now has 100% feature parity with the tree-walking interpreter. All 60 EvaluationTest tests pass successfully!
+Rules:
+- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
+- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
+- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
+- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
