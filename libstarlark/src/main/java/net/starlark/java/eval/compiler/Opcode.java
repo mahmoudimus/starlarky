@@ -112,6 +112,7 @@ public enum Opcode {
   // Iteration
   GET_ITER(0),      // Get iterator from object
   FOR_ITER(1),      // Iterate (operand: jump offset if exhausted)
+  END_FOR(0),       // End for loop - pop iterator and remove iteration lock
 
   // Comprehensions
   LIST_APPEND(1),   // Append to list (operand: list stack offset)

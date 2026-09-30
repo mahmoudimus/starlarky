@@ -560,9 +560,10 @@ public final class BytecodeInterpreter {
 
         case STORE_INDEX:
           {
-            Object value = pop();
+            // Stack order: [value, object, key] (value pushed first by RHS, then object and key by LHS)
             Object key = pop();
             Object object = pop();
+            Object value = pop();
             EvalUtils.setIndex(thread, object, key, value);
           }
           break;
@@ -863,15 +864,23 @@ public final class BytecodeInterpreter {
             @SuppressWarnings("unchecked")
             Iterator<Object> iterator = (Iterator<Object>) peek();
             if (!iterator.hasNext()) {
-              // Iterator exhausted, clean up and jump to end of loop
-              pop(); // Pop iterator
-              Object iterable = iteratorToIterable.remove(iterator);
-              if (iterable != null) {
-                EvalUtils.removeIterator(iterable);
-              }
+              // Iterator exhausted, jump to end of loop
+              // Note: Don't pop or cleanup here - END_FOR will handle it
               ip = instr.getOperand1() - 1;
             } else {
               push(iterator.next());
+            }
+          }
+          break;
+
+        case END_FOR:
+          {
+            // Pop the iterator and remove the iteration lock
+            @SuppressWarnings("unchecked")
+            Iterator<Object> iterator = (Iterator<Object>) pop();
+            Object iterable = iteratorToIterable.remove(iterator);
+            if (iterable != null) {
+              EvalUtils.removeIterator(iterable);
             }
           }
           break;
