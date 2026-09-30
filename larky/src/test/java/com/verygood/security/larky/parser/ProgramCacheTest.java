@@ -28,11 +28,13 @@ public class ProgramCacheTest {
   @Before
   public void setUp() {
     ProgramCache.clear();
+    ModuleCache.clear(); // a cached module would skip the program cache entirely
   }
 
   @After
   public void tearDown() {
     ProgramCache.clear();
+    ModuleCache.clear(); // a cached module would skip the program cache entirely
   }
 
   private ProgramCache.Executable get(Module module) throws EvalException {
@@ -92,24 +94,6 @@ public class ProgramCacheTest {
         get(env(ImmutableMap.of("x", StarlarkInt.of(1), "len", StarlarkInt.of(0))));
     assertThat(second).isNotSameInstanceAs(first);
     assertThat(compiles.get()).isEqualTo(2);
-  }
-
-  @Test
-  public void evaluationsOfACachedModuleGetTheirOwnValues() throws Exception {
-    // The program is shared, but each evaluation executes it into a fresh Module.
-    LarkyEvaluator.EvaluationResult first = newEvaluator().eval(
-        ResourceContentStarFile.buildStarFile("@stdlib//sets"));
-    int cached = ProgramCache.size();
-    LarkyEvaluator.EvaluationResult second = newEvaluator().eval(
-        ResourceContentStarFile.buildStarFile("@stdlib//sets"));
-
-    assertThat(cached).isGreaterThan(0);
-    assertThat(ProgramCache.size()).isEqualTo(cached);
-    assertThat(second.module()).isNotSameInstanceAs(first.module());
-    Object a = first.module().getGlobal("sets");
-    Object b = second.module().getGlobal("sets");
-    assertThat(a).isNotNull();
-    assertThat(b).isNotSameInstanceAs(a);
   }
 
   @Test

@@ -124,6 +124,11 @@ public final class CompiledModule {
     return loads;
   }
 
+  /** The names the file resolved as PREDECLARED. */
+  public ImmutableSet<String> getPredeclaredNames() {
+    return predeclared;
+  }
+
   public byte[] getSourceDigest() {
     return sourceDigest.clone();
   }

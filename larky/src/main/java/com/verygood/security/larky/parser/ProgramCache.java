@@ -53,7 +53,14 @@ final class ProgramCache {
 
     Object exec(Module module, StarlarkThread thread) throws EvalException, InterruptedException;
 
+    /** The names the file resolved as PREDECLARED (whose values its module may capture). */
+    java.util.Set<String> predeclaredNames();
+
     static Executable of(Program program) {
+      return of(program, null);
+    }
+
+    static Executable of(Program program, java.util.Set<String> predeclared) {
       return new Executable() {
         @Override
         public List<String> loads() {
@@ -64,6 +71,11 @@ final class ProgramCache {
         public Object exec(Module module, StarlarkThread thread)
             throws EvalException, InterruptedException {
           return Starlark.execFileProgram(program, module, thread);
+        }
+
+        @Override
+        public java.util.Set<String> predeclaredNames() {
+          return predeclared;
         }
       };
     }
@@ -79,6 +91,11 @@ final class ProgramCache {
         public Object exec(Module module, StarlarkThread thread)
             throws EvalException, InterruptedException {
           return compiled.exec(module, thread);
+        }
+
+        @Override
+        public java.util.Set<String> predeclaredNames() {
+          return compiled.getPredeclaredNames();
         }
       };
     }
@@ -139,10 +156,13 @@ final class ProgramCache {
     StarlarkFile[] parsed = new StarlarkFile[1];
     Program program = compiler.compile(parsed);
     compiledFromSource.incrementAndGet();
-    Executable executable = Executable.of(program);
-    if (parsed[0] != null) {
-      CACHE.put(key, new Entry(executable, validityOf(parsed[0])));
+    if (parsed[0] == null) {
+      return Executable.of(program);
     }
+    ImmutableSet<String> predeclared = namesOf(parsed[0], Resolver.Scope.PREDECLARED);
+    ImmutableSet<String> universal = namesOf(parsed[0], Resolver.Scope.UNIVERSAL);
+    Executable executable = Executable.of(program, predeclared);
+    CACHE.put(key, new Entry(executable, validity(predeclared, universal)));
     return executable;
   }
 
@@ -159,25 +179,21 @@ final class ProgramCache {
     }
   }
 
-  private static Validity validityOf(StarlarkFile file) {
-    ImmutableSet.Builder<String> predeclaredBuilder = ImmutableSet.builder();
-    ImmutableSet.Builder<String> universalBuilder = ImmutableSet.builder();
+  private static ImmutableSet<String> namesOf(StarlarkFile file, Resolver.Scope scope) {
+    ImmutableSet.Builder<String> names = ImmutableSet.builder();
     new NodeVisitor() {
       @Override
       public void visit(Identifier id) {
         Resolver.Binding binding = id.getBinding();
-        if (binding == null) {
-          return;
-        }
-        if (binding.getScope() == Resolver.Scope.PREDECLARED) {
-          predeclaredBuilder.add(id.getName());
-        } else if (binding.getScope() == Resolver.Scope.UNIVERSAL) {
-          universalBuilder.add(id.getName());
+        if (binding != null && binding.getScope() == scope) {
+          names.add(id.getName());
         }
       }
     }.visit(file);
-    ImmutableSet<String> predeclared = predeclaredBuilder.build();
-    ImmutableSet<String> universal = universalBuilder.build();
+    return names.build();
+  }
+
+  private static Validity validity(ImmutableSet<String> predeclared, ImmutableSet<String> universal) {
     return module -> {
       Map<String, Object> env = module.getPredeclaredBindings();
       for (String name : predeclared) {

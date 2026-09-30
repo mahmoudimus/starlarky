@@ -1,12 +1,13 @@
 package com.verygood.security.larky.objects.type;
 
+import java.util.Collections;
+import com.google.common.collect.MapMaker;
 import com.google.common.base.Suppliers;
 import com.google.common.collect.ImmutableCollection;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.ImmutableSortedSet;
 import com.google.common.collect.Sets;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -71,7 +72,10 @@ final public class LarkyTypeObject implements LarkyType {
   // The mutability of the thread that defined this type (for types defined by a script), which
   // decides when the type becomes frozen; see isFrozenType.
   @Nullable private Mutability mutability;
-  private final Set<LarkyType> allSubclasses = new HashSet<>();
+  // Weak and synchronized, like object's: a class shared between evaluations (e.g. from a cached
+  // stdlib module) gets subclasses from concurrent evaluations, which must not be kept alive.
+  private final Set<LarkyType> allSubclasses =
+      Collections.synchronizedSet(Collections.newSetFromMap(new MapMaker().weakKeys().makeMap()));
   private List<LarkyType> __mro__;
   private String name;
   private LarkyType[] __bases__;

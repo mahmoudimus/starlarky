@@ -119,6 +119,16 @@ public final class LarkyEvaluator {
           .module(module)
           .build();
     }
+    // Larky's own modules are loaded once per process and shared (see ModuleCache).
+    if (content instanceof ResourceContentStarFile) {
+      Module shared =
+          ModuleCache.lookup(
+              content.path(), getStarlarkValidationOptions(), getLarkySemantics(), getEnvironment());
+      if (shared != null) {
+        loaded.put(content.path(), shared);
+        return DefaultEvaluationResult.builder().module(shared).build();
+      }
+    }
     pending.add(content.path());
 
     // Make the modules available as predeclared bindings.
@@ -166,6 +176,11 @@ public final class LarkyEvaluator {
 
       // Set some statistical information
       module.setGlobal(EXECUTION_STEPS, thread.getExecutedSteps());
+    }
+    if (content instanceof ResourceContentStarFile) {
+      ModuleCache.put(
+          content.path(), options, getLarkySemantics(), module, prog.predeclaredNames(),
+          getEnvironment(), loadedModules);
     }
     pending.remove(content.path());
     loaded.put(content.path(), module);
@@ -240,8 +255,32 @@ public final class LarkyEvaluator {
     }
 
 
+    // Wrapper modules for native modules, which are process-wide singletons: one wrapper each.
+    private static final java.util.concurrent.ConcurrentHashMap<java.util.List<Object>, Module>
+        NATIVE_WRAPPERS = new java.util.concurrent.ConcurrentHashMap<>();
+
     @NotNull
     private Module fromNativeModule(String moduleToLoad) throws IOException, InterruptedException {
+      java.util.List<Object> key =
+          java.util.Arrays.asList(
+              moduleToLoad,
+              System.identityHashCode(nativeJavaModule.get(moduleToLoad)),
+              nativeJavaModule.get(moduleToLoad),
+              evaluator.getLarkySemantics());
+      Module cached = NATIVE_WRAPPERS.get(key);
+      if (cached != null) {
+        return cached;
+      }
+      Module wrapper = newNativeModule(moduleToLoad);
+      Module previous = NATIVE_WRAPPERS.putIfAbsent(key, wrapper);
+      if (previous != null) {
+        return previous;
+      }
+      ModuleCache.putStable(wrapper);
+      return wrapper;
+    }
+
+    private Module newNativeModule(String moduleToLoad) throws IOException, InterruptedException {
       Module newModule = Module.withPredeclaredAndData(
           evaluator.getLarkySemantics(),
           ImmutableMap.of("_" + moduleToLoad, nativeJavaModule.get(moduleToLoad)),
@@ -341,6 +380,27 @@ public final class LarkyEvaluator {
   /**
    * Create the environment for all evaluations (will be shared between all the dependent files loaded).
    */
+  // The bindings of each built-in module class. The classes are stateless (no fields), so one
+  // instance per process serves every evaluation; sharing them is what lets cached modules, which
+  // capture these values, be reused across evaluations (see ModuleCache).
+  private static final java.util.concurrent.ConcurrentHashMap<Class<?>, ImmutableMap<String, Object>>
+      BUILTIN_BINDINGS = new java.util.concurrent.ConcurrentHashMap<>();
+
+  private static ImmutableMap<String, Object> builtinBindings(Class<?> module) {
+    ImmutableMap.Builder<String, Object> envBuilder = ImmutableMap.builder();
+    try {
+      StarlarkBuiltin annot = StarlarkAnnotations.getStarlarkBuiltin(module);
+      if (annot != null) {
+        envBuilder.put(annot.name(), module.getConstructor().newInstance());
+      } else if (module.isAnnotationPresent(Library.class)) {
+        Starlark.addMethods(envBuilder, module.getConstructor().newInstance());
+      }
+    } catch (ReflectiveOperationException e) {
+      throw new AssertionError(e);
+    }
+    return envBuilder.build();
+  }
+
   private ImmutableMap<String, Object> createEnvironment(Iterable<Class<?>> globalModules,
       Map<String, Object> globals) {
     Map<String, Object> env = Maps.newHashMap();
@@ -348,18 +408,7 @@ public final class LarkyEvaluator {
     for (Class<?> module : globalModules) {
       logger.atFine().log("Creating variable for %s", module.getName());
       // Create the module object and associate it with the functions
-      ImmutableMap.Builder<String, Object> envBuilder = ImmutableMap.builder();
-      try {
-        StarlarkBuiltin annot = StarlarkAnnotations.getStarlarkBuiltin(module);
-        if (annot != null) {
-          envBuilder.put(annot.name(), module.getConstructor().newInstance());
-        } else if (module.isAnnotationPresent(Library.class)) {
-          Starlark.addMethods(envBuilder, module.getConstructor().newInstance());
-        }
-      } catch (ReflectiveOperationException e) {
-        throw new AssertionError(e);
-      }
-      env.putAll(envBuilder.build());
+      env.putAll(BUILTIN_BINDINGS.computeIfAbsent(module, LarkyEvaluator::builtinBindings));
     }
     env.putAll(globals);
     return ImmutableMap.copyOf(env);
