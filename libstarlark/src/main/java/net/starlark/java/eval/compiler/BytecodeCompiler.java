@@ -264,10 +264,13 @@ public final class BytecodeCompiler {
     breakContinueStack.add(bc);
 
     // Compile iterable expression
-    compileExpression(node.getCollection());
+    Expression collection = node.getCollection();
+    compileExpression(collection);
 
-    // Get iterator
-    builder.emit(Opcode.GET_ITER, lineNum);
+    // Get iterator - use collection's location for better error messages
+    int iterLineNum = getLine(collection);
+    int iterColNum = getColumn(collection);
+    builder.emitWithColumn(Opcode.GET_ITER, iterLineNum, iterColNum);
 
     // Loop start
     markLabel(continueLabel);
@@ -681,10 +684,14 @@ public final class BytecodeCompiler {
       int lineNum = getLine(forClause);
 
       // Compile iterable expression
-      compileExpression(forClause.getIterable());
+      Expression iterable = forClause.getIterable();
+      compileExpression(iterable);
 
       // Get iterator - this adds 1 to stack depth
-      builder.emit(Opcode.GET_ITER, lineNum);
+      // Use the iterable's location for better error messages
+      int iterLineNum = getLine(iterable);
+      int iterColNum = getColumn(iterable);
+      builder.emitWithColumn(Opcode.GET_ITER, iterLineNum, iterColNum);
 
       // Start of loop
       String continueLabel = newLabel("comp_for_continue");
@@ -922,5 +929,10 @@ public final class BytecodeCompiler {
   private int getLine(Node node) {
     Location loc = node.getStartLocation();
     return loc != null ? loc.line() : -1;
+  }
+
+  private int getColumn(Node node) {
+    Location loc = node.getStartLocation();
+    return loc != null ? loc.column() : 0;
   }
 }
