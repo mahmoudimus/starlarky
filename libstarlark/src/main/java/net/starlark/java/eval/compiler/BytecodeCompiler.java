@@ -29,7 +29,7 @@ import net.starlark.java.syntax.*;
  *
  * <p>The compiler assumes the AST has been resolved (variables bound, scopes determined).
  */
-public final class BytecodeCompiler implements NodeVisitor {
+public final class BytecodeCompiler {
 
   private final BytecodeChunk.Builder builder;
   private final Map<String, Integer> labelOffsets;
@@ -202,7 +202,6 @@ public final class BytecodeCompiler implements NodeVisitor {
 
   // Statement visitors
 
-  @Override
   public void visit(AssignmentStatement node) {
     // Compile the RHS expression
     compileExpression(node.getRHS());
@@ -211,14 +210,12 @@ public final class BytecodeCompiler implements NodeVisitor {
     compileLValue(node.getLHS());
   }
 
-  @Override
   public void visit(ExpressionStatement node) {
     compileExpression(node.getExpression());
     // Expression result is not used, pop it
     builder.emit(Opcode.POP, getLine(node));
   }
 
-  @Override
   public void visit(IfStatement node) {
     int lineNum = getLine(node);
 
@@ -248,7 +245,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     markLabel(endLabel);
   }
 
-  @Override
   public void visit(ForStatement node) {
     int lineNum = getLine(node);
     loopDepth++;
@@ -295,7 +291,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     loopDepth--;
   }
 
-  @Override
   public void visit(DefStatement node) {
     int lineNum = getLine(node);
 
@@ -314,7 +309,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     storeVariable(id);
   }
 
-  @Override
   public void visit(ReturnStatement node) {
     int lineNum = getLine(node);
 
@@ -328,7 +322,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     builder.emit(Opcode.RETURN, lineNum);
   }
 
-  @Override
   public void visit(FlowStatement node) {
     int lineNum = getLine(node);
 
@@ -357,41 +350,35 @@ public final class BytecodeCompiler implements NodeVisitor {
     }
   }
 
-  @Override
   public void visit(LoadStatement node) {
     // Load statements are typically handled at module initialization
     // For now, emit a placeholder
     int lineNum = getLine(node);
-    int moduleIndex = builder.addConstant(node.getModuleName());
+    int moduleIndex = builder.addConstant(node.getImport().getValue());
     builder.emit(Opcode.LOAD_MODULE, moduleIndex, lineNum);
   }
 
   // Expression visitors
 
-  @Override
   public void visit(Identifier node) {
     loadVariable(node);
   }
 
-  @Override
   public void visit(IntLiteral node) {
     int index = builder.addConstant(node.getValue());
     builder.emit(Opcode.LOAD_CONST, index, getLine(node));
   }
 
-  @Override
   public void visit(FloatLiteral node) {
     int index = builder.addConstant(node.getValue());
     builder.emit(Opcode.LOAD_CONST, index, getLine(node));
   }
 
-  @Override
   public void visit(StringLiteral node) {
     int index = builder.addConstant(node.getValue());
     builder.emit(Opcode.LOAD_CONST, index, getLine(node));
   }
 
-  @Override
   public void visit(BinaryOperatorExpression node) {
     int lineNum = getLine(node);
 
@@ -426,7 +413,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     builder.emit(opcode, lineNum);
   }
 
-  @Override
   public void visit(UnaryOperatorExpression node) {
     compileExpression(node.getX());
 
@@ -434,7 +420,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     builder.emit(opcode, getLine(node));
   }
 
-  @Override
   public void visit(ListExpression node) {
     int lineNum = getLine(node);
 
@@ -447,7 +432,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     builder.emit(Opcode.BUILD_LIST, node.getElements().size(), lineNum);
   }
 
-  @Override
   public void visit(DictExpression node) {
     int lineNum = getLine(node);
 
@@ -461,7 +445,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     builder.emit(Opcode.BUILD_DICT, node.getEntries().size(), lineNum);
   }
 
-  @Override
   public void visit(CallExpression node) {
     int lineNum = getLine(node);
 
@@ -489,7 +472,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     builder.emit(Opcode.CALL, posArgCount, kwArgCount, lineNum);
   }
 
-  @Override
   public void visit(DotExpression node) {
     int lineNum = getLine(node);
 
@@ -501,7 +483,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     builder.emit(Opcode.LOAD_ATTR, nameIndex, lineNum);
   }
 
-  @Override
   public void visit(IndexExpression node) {
     int lineNum = getLine(node);
 
@@ -512,7 +493,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     builder.emit(Opcode.INDEX, lineNum);
   }
 
-  @Override
   public void visit(SliceExpression node) {
     int lineNum = getLine(node);
 
@@ -541,7 +521,6 @@ public final class BytecodeCompiler implements NodeVisitor {
     builder.emit(Opcode.SLICE, lineNum);
   }
 
-  @Override
   public void visit(ConditionalExpression node) {
     int lineNum = getLine(node);
 
@@ -565,28 +544,21 @@ public final class BytecodeCompiler implements NodeVisitor {
     markLabel(endLabel);
   }
 
-  @Override
   public void visit(Comprehension node) {
     // Comprehensions are complex - simplified implementation
     int lineNum = getLine(node);
 
     // Create empty collection
-    switch (node.getType()) {
-      case LIST:
-        builder.emit(Opcode.BUILD_LIST, 0, lineNum);
-        break;
-      case DICT:
-        builder.emit(Opcode.BUILD_DICT, 0, lineNum);
-        break;
-      default:
-        throw new UnsupportedOperationException("Unsupported comprehension type: " + node.getType());
+    if (node.isDict()) {
+      builder.emit(Opcode.BUILD_DICT, 0, lineNum);
+    } else {
+      builder.emit(Opcode.BUILD_LIST, 0, lineNum);
     }
 
     // TODO: Implement comprehension logic
     // This requires handling nested loops and filters
   }
 
-  @Override
   public void visit(LambdaExpression node) {
     // Lambdas are simplified functions
     int lineNum = getLine(node);
